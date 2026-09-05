@@ -1,0 +1,44 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.pytest_cache
+*.egg-info
+
+# processed/generated data (regenerate via scripts/)
+data/processed/*.csv
+data/processed/*.pkl
+!data/processed/.gitkeep
+
+# raw downloaded WS-DREAM Dataset #1 (large, regenerate via scripts/01_download_data.py)
+data/raw/wsdream1/
+data/raw/wsdream2/
+
+# agent memory logs and experiment outputs (regenerate via scripts/)
+memory_store/*.jsonl
+!memory_store/.gitkeep
+results/tables/*.csv
+results/tables/*.md
+!results/tables/.gitkeep
+!results/tables/report_tables.md
+!results/tables/extended_analysis.md
+!results/tables/wsdream_complete_summary.md
+results/figures/*.png
+!results/figures/.gitkeep
+!results/figures/regret_by_condition.png
+!results/figures/adaptation_lag_by_condition.png
+!results/figures/regret_by_task_kind.png
+!results/figures/agent_latency_by_condition.png
+!results/figures/strategy_selection_frequency.png
+!results/figures/drift_trace_example.png
+!results/figures/wsdream_complete_comparison.png
+
+# local config overrides / secrets
+config.local.yaml
+.env
+
+.venv/
+venv/
+*.egg-info/
+build/
+dist/

@@ -1,0 +1,70 @@
+# Agentic Cloud Service Selection - experiment configuration.
+#
+# Copy this file if you want to keep multiple configurations (e.g.
+# config.smoketest.yaml, config.full.yaml) and pass --config path/to/file.yaml
+# to any script in scripts/.
+
+llm:
+  # provider: anthropic | openai | ollama | mock
+  #
+  # - anthropic: needs ANTHROPIC_API_KEY in your environment (or set
+  #   api_key below, NOT recommended for anything you might commit/share).
+  #   Model default below is the current budget/low-latency Claude tier --
+  #   see agent/llm_backends.py's module docstring for the "if this 404s"
+  #   note.
+  # - openai: needs OPENAI_API_KEY in your environment.
+  # - ollama: no API key, but you must have Ollama installed and running
+  #   locally (https://ollama.com) with the model pulled, e.g.:
+  #       ollama pull llama3.1:8b
+  # - mock: no network call at all, returns `fixed_response` verbatim
+  #   every time. Only useful for a wiring/dry-run smoke test, NOT for
+  #   producing any reportable result -- the validation layer will treat
+  #   a constant response as one specific decision repeated everywhere.
+  provider: ollama
+  model: llama3.1:8b
+  temperature: 0.0
+  max_tokens: 1000
+  # api_key: null   # prefer environment variables over putting a key here
+
+paths:
+  data_dir: data
+  memory_path: memory_store/agent_memory.jsonl
+  wsdream_memory_path: memory_store/agent_memory_wsdream.jsonl
+  results_dir: results/tables
+  figures_dir: results/figures
+
+protocol:
+  # Full paper protocol (§4.3): n_pools=30, pool_size=20. This is ~130
+  # profiles x pools x 2-agent-conditions LLM calls for the stable
+  # experiment alone -- reduce n_pools for a cheap smoke test first.
+  stable:
+    n_pools: 30
+    pool_size: 20
+    base_seed: 1000
+  drift:
+    n_trials: 10
+    pool_size: 20
+    n_rounds: 20
+    degrade_start_round: 8
+    static_reevaluation_period: 5
+    degradation_profile: sudden   # sudden | gradual | sudden_then_recover
+    degradation_magnitude: 0.75
+    base_seed: 5000
+  wsdream:
+    # Supplementary validation (paper §5.4) on WS-DREAM Dataset #1's
+    # real, independently-sourced response_time/throughput data -- a
+    # check that the agent's behavior isn't an artifact of QWS's
+    # specific 9-attribute schema. Only 2 of the 6 task profiles
+    # (streaming, iot_telemetry_ingestion) have a natural analogue in
+    # this reduced 2-attribute schema -- see
+    # tasks/wsdream_profiles.py. Requires WS-DREAM Dataset #1 to have
+    # been downloaded (scripts/01_download_data.py, don't pass
+    # --skip-wsdream).
+    n_pools: 30
+    pool_size: 20
+    min_observations: 30   # min valid user-observations per service to trust its mean (see data/wsdream_loader.py)
+    base_seed: 9000
+
+agent:
+  k_memory: 3
+  tool_menu: [weighted_sum, topsis, skyline_then_topsis]

@@ -1,0 +1,21 @@
+# Core (required)
+pandas>=1.5
+numpy>=1.23
+requests>=2.28
+scipy>=1.9
+matplotlib>=3.6
+pyyaml>=6.0
+tqdm>=4.65
+streamlit>=1.32
+
+# LLM backend(s) -- install only the ones you plan to use.
+# Anthropic (recommended default, see config.yaml):
+anthropic>=0.30
+# OpenAI (optional alternative backend):
+# openai>=1.0
+# Ollama backend needs no Python package (uses `requests`, already above);
+# it needs the Ollama application itself: https://ollama.com
+
+# Dev / testing
+pytest>=7.0
+pytest-cov>=4.0
