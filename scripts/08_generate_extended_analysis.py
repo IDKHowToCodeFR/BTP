@@ -21,6 +21,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from agentic_selection.evaluation.plot_style import (
+    ACCENT_COLORS,
+    CONDITION_COLORS,
+    MUTED,
+    add_bar_labels,
+    apply_publication_style,
+    save_figure,
+    style_axis,
+)
 
 CONDITION_DISPLAY = {
     "global_fixed": "Global fixed",
@@ -30,6 +39,8 @@ CONDITION_DISPLAY = {
 }
 CONDITION_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full"]
 
+apply_publication_style()
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -37,17 +48,25 @@ def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def _save_bar(df: pd.DataFrame, x: str, y: str, out_path: Path, title: str, ylabel: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.bar(df[x], df[y], color="#4C78A8")
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.tick_params(axis="x", rotation=20)
-    for label in ax.get_xticklabels():
-        label.set_ha("right")
+def _save_bar(
+    df: pd.DataFrame,
+    label_col: str,
+    value_col: str,
+    out_path: Path,
+    title: str,
+    xlabel: str,
+    colors: list[str],
+    fmt: str,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    bars = ax.barh(df[label_col], df[value_col], color=colors, height=0.62, zorder=3)
+    ax.invert_yaxis()
+    ax.set_title(title, pad=14)
+    ax.set_xlabel(xlabel)
+    style_axis(ax)
+    add_bar_labels(ax, bars, fmt=fmt)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=160)
-    plt.close(fig)
+    save_figure(fig, out_path)
 
 
 def _plot_task_kind_regret(stable: pd.DataFrame, out_path: Path) -> pd.DataFrame:
@@ -56,18 +75,36 @@ def _plot_task_kind_regret(stable: pd.DataFrame, out_path: Path) -> pd.DataFrame
         .mean()
         .assign(condition_label=lambda d: d["condition"].map(CONDITION_DISPLAY))
     )
-    pivot = agg.pivot(index="task_kind", columns="condition_label", values="regret")
+    pivot = agg.pivot(index="task_kind", columns="condition", values="regret")
+    pivot = pivot.reindex(columns=CONDITION_ORDER)
+    pivot = pivot.rename(index={"profile": "Known profiles", "held_out": "Held-out requests"})
 
-    fig, ax = plt.subplots(figsize=(9, 4.8))
-    pivot.plot(kind="bar", ax=ax)
-    ax.set_title("Mean regret by task kind")
+    fig, ax = plt.subplots(figsize=(9.4, 5.2))
+    colors = [CONDITION_COLORS[key] for key in pivot.columns]
+    pivot.plot(kind="bar", ax=ax, color=colors, width=0.72, zorder=3)
+    ax.set_title("Generalization Beyond Known Task Profiles", pad=14)
+    ax.text(
+        0,
+        1.02,
+        "Mean regret by request type - lower is better",
+        transform=ax.transAxes,
+        color=MUTED,
+        fontsize=10,
+    )
     ax.set_ylabel("Mean regret")
     ax.set_xlabel("")
     ax.tick_params(axis="x", rotation=0)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
+    ax.legend(
+        [CONDITION_DISPLAY[key] for key in pivot.columns],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.13),
+        ncol=2,
+    )
+    style_axis(ax, grid_axis="y")
+    for container in ax.containers:
+        add_bar_labels(ax, container, fmt=".3f", horizontal=False)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=160)
-    plt.close(fig)
+    save_figure(fig, out_path)
     return agg
 
 
@@ -76,15 +113,21 @@ def _plot_latency(stable: pd.DataFrame, out_path: Path) -> pd.DataFrame:
     agg = (
         agents.groupby("condition", as_index=False)["latency_seconds"]
         .mean()
-        .assign(condition=lambda d: d["condition"].map(CONDITION_DISPLAY))
+        .set_index("condition")
+        .reindex(["agent_weights_only", "agent_full"])
+        .reset_index()
     )
+    colors = [CONDITION_COLORS[key] for key in agg["condition"]]
+    agg["condition"] = agg["condition"].map(CONDITION_DISPLAY)
     _save_bar(
         agg,
         "condition",
         "latency_seconds",
         out_path,
-        "Mean agent decision latency",
-        "Seconds",
+        "Agent Decision Latency",
+        "Mean wall-clock time per decision (seconds) - lower is better",
+        colors,
+        ".3f",
     )
     return agg
 
@@ -105,14 +148,24 @@ def _plot_strategy_frequency(records: list[dict], out_path: Path) -> pd.DataFram
         strategies = pd.DataFrame(records)["strategy"].value_counts().rename_axis("strategy").reset_index(name="count")
     else:
         strategies = pd.DataFrame({"strategy": ["no_memory_records"], "count": [0]})
-    _save_bar(strategies, "strategy", "count", out_path, "Strategy choices in agent memory", "Count")
+    strategies["strategy_label"] = strategies["strategy"].str.replace("_", " ").str.title()
+    _save_bar(
+        strategies,
+        "strategy_label",
+        "count",
+        out_path,
+        "Agent Strategy Selection Frequency",
+        "Recorded decisions",
+        [ACCENT_COLORS[index % len(ACCENT_COLORS)] for index in range(len(strategies))],
+        ".0f",
+    )
     return strategies
 
 
 def _parse_trace(raw: str) -> list[str]:
     try:
         return [str(x) for x in ast.literal_eval(raw)]
-    except Exception:
+    except (SyntaxError, ValueError):
         return []
 
 
@@ -130,6 +183,7 @@ def _plot_drift_trace(drift: pd.DataFrame, out_path: Path) -> pd.DataFrame:
             rows.append(
                 {
                     "round": round_idx,
+                    "condition_key": row["condition"],
                     "condition": CONDITION_DISPLAY.get(row["condition"], row["condition"]),
                     "still_recommending_degraded": service_id == str(row["target_service_id"]),
                     "target_service_id": str(row["target_service_id"]),
@@ -139,22 +193,52 @@ def _plot_drift_trace(drift: pd.DataFrame, out_path: Path) -> pd.DataFrame:
     if trace_df.empty:
         return trace_df
 
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    for condition, group in trace_df.groupby("condition"):
+    fig, ax = plt.subplots(figsize=(9.8, 5.2))
+    line_styles = ("-", "--", "-.", ":")
+    for index, condition_key in enumerate(CONDITION_ORDER):
+        group = trace_df[trace_df["condition_key"] == condition_key]
+        if group.empty:
+            continue
         ax.step(
             group["round"],
             group["still_recommending_degraded"].astype(int),
             where="post",
-            label=condition,
+            label=CONDITION_DISPLAY[condition_key],
+            color=CONDITION_COLORS[condition_key],
+            linewidth=2.5,
+            linestyle=line_styles[index],
+            zorder=3,
         )
-    ax.set_title(f"Drift trace example: {task}, seed {seed}")
-    ax.set_xlabel("Round")
-    ax.set_ylabel("Still recommending degraded service")
-    ax.set_yticks([0, 1])
-    ax.legend(loc="upper right")
+    degrade_round = int(example["degrade_start_round"].iloc[0])
+    last_round = int(trace_df["round"].max())
+    ax.axvspan(degrade_round, last_round, color="#D55E5E", alpha=0.08, zorder=0)
+    ax.axvline(degrade_round, color="#9C2F2F", linewidth=1.4, linestyle="--", zorder=2)
+    ax.text(
+        degrade_round + 0.25,
+        1.08,
+        "QoS degradation begins",
+        color="#9C2F2F",
+        fontsize=9,
+        fontweight="bold",
+    )
+    ax.set_title("Adaptation Trace After a Sudden QoS Shift", pad=14)
+    ax.text(
+        0,
+        1.02,
+        f"Example task: {task.replace('_', ' ').title()} | trial seed: {seed}",
+        transform=ax.transAxes,
+        color=MUTED,
+        fontsize=10,
+    )
+    ax.set_xlabel("Evaluation round")
+    ax.set_ylabel("")
+    ax.set_yticks([0, 1], ["Switched away", "Still on degraded service"])
+    ax.set_ylim(-0.14, 1.18)
+    ax.set_xlim(0, last_round)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.27), ncol=2)
+    style_axis(ax, grid_axis="both")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=160)
-    plt.close(fig)
+    save_figure(fig, out_path)
     return trace_df
 
 

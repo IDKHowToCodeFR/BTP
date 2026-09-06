@@ -23,6 +23,7 @@ results/tables/*.md
 !results/tables/report_tables.md
 !results/tables/extended_analysis.md
 !results/tables/wsdream_complete_summary.md
+!results/tables/presentation_figures.md
 results/figures/*.png
 !results/figures/.gitkeep
 !results/figures/regret_by_condition.png
@@ -32,6 +33,11 @@ results/figures/*.png
 !results/figures/strategy_selection_frequency.png
 !results/figures/drift_trace_example.png
 !results/figures/wsdream_complete_comparison.png
+!results/figures/project_results_overview.png
+!results/figures/qws_regret_heatmap.png
+!results/figures/qws_regret_distribution.png
+!results/figures/wsdream_temporal_behavior.png
+!results/figures/wsdream_profile_comparison.png
 
 # local config overrides / secrets
 config.local.yaml

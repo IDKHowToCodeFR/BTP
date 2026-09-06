@@ -13,12 +13,17 @@ for smoke-testing the pipeline only, never for reporting results.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from agentic_selection.evaluation.metrics import mean_confidence_interval
+from agentic_selection.evaluation.plot_style import (
+    CONDITION_COLORS,
+    add_bar_labels,
+    apply_publication_style,
+    save_figure,
+    style_axis,
+)
 
 CONDITION_DISPLAY_NAMES = {
     "global_fixed": "Global fixed",
@@ -124,9 +129,9 @@ def operational_table(stable_df: pd.DataFrame, allow_synthetic: bool = False) ->
 
 def render_markdown_tables(
     stable_df: pd.DataFrame,
-    drift_df: Optional[pd.DataFrame],
+    drift_df: pd.DataFrame | None,
     allow_synthetic: bool = False,
-    wsdream_df: Optional[pd.DataFrame] = None,
+    wsdream_df: pd.DataFrame | None = None,
 ) -> str:
     """Render Tables 5.1-5.3 (and, if wsdream_df is given, 5.4) as
     GitHub-flavored markdown, ready to paste into
@@ -168,7 +173,7 @@ def render_markdown_tables(
     return "\n".join(parts)
 
 
-def make_figures(stable_df: pd.DataFrame, drift_df: Optional[pd.DataFrame], out_dir: Path | str) -> list:
+def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir: Path | str) -> list:
     """Save a small set of matplotlib figures to out_dir. Returns the
     list of file paths written. Uses the non-interactive Agg backend so
     this runs headless (CI, remote server) without needing a display.
@@ -178,13 +183,15 @@ def make_figures(stable_df: pd.DataFrame, drift_df: Optional[pd.DataFrame], out_
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    apply_publication_style()
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
 
     # Regret by condition (aggregated across all task profiles)
-    fig, ax = plt.subplots(figsize=(7, 4))
-    means, errs, labels = [], [], []
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    means, errs, labels, colors = [], [], [], []
     for cond in CONDITION_ORDER:
         sub = stable_df[stable_df["condition"] == cond]["regret"]
         if len(sub) == 0:
@@ -193,19 +200,29 @@ def make_figures(stable_df: pd.DataFrame, drift_df: Optional[pd.DataFrame], out_
         means.append(ci.mean)
         errs.append(ci.mean - ci.lower)
         labels.append(CONDITION_DISPLAY_NAMES[cond])
-    ax.bar(labels, means, yerr=errs, capsize=4)
-    ax.set_ylabel("Mean regret (95% CI)")
-    ax.set_title("Regret by condition (all task profiles pooled)")
-    plt.xticks(rotation=20, ha="right")
+        colors.append(CONDITION_COLORS[cond])
+    bars = ax.barh(labels, means, xerr=errs, capsize=4, color=colors, height=0.62, zorder=3)
+    ax.invert_yaxis()
+    ax.set_xlabel("Mean regret (95% CI) - lower is better")
+    ax.set_title("Decision Quality Across Methods", pad=15)
+    ax.text(
+        0,
+        1.02,
+        "Regret pooled across all task profiles",
+        transform=ax.transAxes,
+        color="#5D6878",
+        fontsize=10,
+    )
+    style_axis(ax)
+    add_bar_labels(ax, bars, fmt=".4f")
     fig.tight_layout()
     p1 = out_dir / "regret_by_condition.png"
-    fig.savefig(p1, dpi=150)
-    plt.close(fig)
+    save_figure(fig, p1)
     written.append(p1)
 
     if drift_df is not None and len(drift_df) > 0:
-        fig, ax = plt.subplots(figsize=(7, 4))
-        means, errs, labels = [], [], []
+        fig, ax = plt.subplots(figsize=(8.4, 4.8))
+        means, errs, labels, colors = [], [], [], []
         for cond in CONDITION_ORDER:
             sub = drift_df[(drift_df["condition"] == cond) & (~drift_df["censored"].astype(bool))]
             if len(sub) == 0:
@@ -214,14 +231,24 @@ def make_figures(stable_df: pd.DataFrame, drift_df: Optional[pd.DataFrame], out_
             means.append(ci.mean)
             errs.append(ci.mean - ci.lower)
             labels.append(CONDITION_DISPLAY_NAMES[cond])
-        ax.bar(labels, means, yerr=errs, capsize=4, color="orange")
-        ax.set_ylabel("Mean adaptation lag (rounds, 95% CI)")
-        ax.set_title("Adaptation lag under drift, by condition (censored trials excluded)")
-        plt.xticks(rotation=20, ha="right")
+            colors.append(CONDITION_COLORS[cond])
+        bars = ax.barh(labels, means, xerr=errs, capsize=4, color=colors, height=0.62, zorder=3)
+        ax.invert_yaxis()
+        ax.set_xlabel("Mean adaptation lag in rounds (95% CI) - lower is better")
+        ax.set_title("Response Speed After QoS Degradation", pad=15)
+        ax.text(
+            0,
+            1.02,
+            "Censored trials are excluded from the mean",
+            transform=ax.transAxes,
+            color="#5D6878",
+            fontsize=10,
+        )
+        style_axis(ax)
+        add_bar_labels(ax, bars, fmt=".1f")
         fig.tight_layout()
         p2 = out_dir / "adaptation_lag_by_condition.png"
-        fig.savefig(p2, dpi=150)
-        plt.close(fig)
+        save_figure(fig, p2)
         written.append(p2)
 
     return written

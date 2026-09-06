@@ -18,9 +18,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
 
 from agentic_selection.agent import AgentController, DemoHeuristicBackend
 from agentic_selection.baselines import topsis
@@ -33,6 +37,15 @@ from agentic_selection.baselines.wsdream_lookup_table import (
 from agentic_selection.data.preprocessing import normalize_benefit_oriented
 from agentic_selection.data.wsdream_loader import load_wsdream_dataset2_aggregated
 from agentic_selection.evaluation import run_stable_protocol
+from agentic_selection.evaluation.plot_style import (
+    CONDITION_COLORS,
+    CONDITION_LABELS,
+    MUTED,
+    add_bar_labels,
+    apply_publication_style,
+    save_figure,
+    style_axis,
+)
 from agentic_selection.tasks.wsdream_profiles import WSDREAM_TASK_PROFILES
 
 TEMPORAL_CONDITIONS = (
@@ -43,6 +56,8 @@ TEMPORAL_CONDITIONS = (
     "agent_weights_only",
     "agent_full",
 )
+
+apply_publication_style()
 
 
 def positive_int(value: str) -> int:
@@ -323,19 +338,39 @@ modalities and do not contain the QoS matrices required by this selection method
 
     figure_path = root / "results" / "figures" / "wsdream_complete_comparison.png"
     figure_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    fig, axes = plt.subplots(1, 3, figsize=(17.2, 5.8))
+    fig.suptitle("WS-DREAM Cross-Dataset Evaluation", x=0.04, ha="left")
+    fig.text(
+        0.04,
+        0.91,
+        "Mean selection regret across static and temporal QoS settings - lower is better",
+        color=MUTED,
+        fontsize=11,
+    )
     for axis, data, metric, title in (
-        (axes[0], ds1, "regret", "Dataset #1 static regret"),
-        (axes[1], ds2, "regret", "Dataset #2 static regret"),
-        (axes[2], dynamic, "mean_regret", "Dataset #2 temporal regret"),
+        (axes[0], ds1, "regret", "Dataset #1 | Static"),
+        (axes[1], ds2, "regret", "Dataset #2 | Static"),
+        (axes[2], dynamic, "mean_regret", "Dataset #2 | 64 Time Slices"),
     ):
-        axis.barh(data["condition"], data[metric], color="#287271")
-        axis.set_title(title)
-        axis.set_xlabel("Mean regret, lower is better")
-        axis.grid(axis="x", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(figure_path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
+        plot_data = data.copy()
+        plot_data["label"] = plot_data["condition"].map(CONDITION_LABELS).fillna(plot_data["condition"])
+        colors = [CONDITION_COLORS.get(key, "#7B8794") for key in plot_data["condition"]]
+        bars = axis.barh(plot_data["label"], plot_data[metric], color=colors, height=0.62, zorder=3)
+        axis.invert_yaxis()
+        axis.set_title(title, pad=12)
+        axis.set_xlabel("Mean regret")
+        axis.xaxis.set_major_locator(MaxNLocator(nbins=5))
+        style_axis(axis)
+        add_bar_labels(axis, bars, fmt=".5f")
+    fig.text(
+        0.04,
+        0.015,
+        "Agent conditions use the deterministic offline controller; these are pipeline-validation results, not live-LLM evidence.",
+        color=MUTED,
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0.025, 0.055, 1, 0.88), w_pad=3.0)
+    save_figure(fig, figure_path)
     print(f"Wrote summary: {summary_path}")
     print(f"Wrote figure: {figure_path}")
 
