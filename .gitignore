@@ -1,22 +1,50 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.egg-info/
-.pytest_cache/
-.pytest_cache
-*.egg-info
+*.py[cod]
+*$py.class
 
-# processed/generated data (regenerate via scripts/)
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local Config Overrides / Secrets
+config.local.yaml
+
+# -----------------------------------------------------------------------------
+# BTP Project Specific
+# -----------------------------------------------------------------------------
+
+# Processed/generated data (regenerate via scripts/)
 data/processed/*.csv
 data/processed/*.pkl
 !data/processed/.gitkeep
 
-# raw downloaded WS-DREAM Dataset #1 (large, regenerate via scripts/01_download_data.py)
+# Raw downloaded WS-DREAM Datasets (large, regenerate via scripts/01_download_data.py)
 data/raw/wsdream1/
 data/raw/wsdream2/
 
-# agent memory logs and experiment outputs (regenerate via scripts/)
+# Agent memory logs
 memory_store/*.jsonl
 !memory_store/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Experiment Results
+# Ignore all raw results/tables by default, but explicitly track final reports
+# -----------------------------------------------------------------------------
 results/tables/*.csv
 results/tables/*.md
 !results/tables/.gitkeep
@@ -24,27 +52,35 @@ results/tables/*.md
 !results/tables/extended_analysis.md
 !results/tables/wsdream_complete_summary.md
 !results/tables/presentation_figures.md
+
+# -----------------------------------------------------------------------------
+# Figures
+# Ignore intermediate/raw figures, explicitly track presentation & report figures
+# -----------------------------------------------------------------------------
 results/figures/*.png
 !results/figures/.gitkeep
+
+# Core Evaluation (Report)
 !results/figures/regret_by_condition.png
 !results/figures/adaptation_lag_by_condition.png
+!results/figures/api_calls_by_condition.png
+!results/figures/latency_by_condition.png
+!results/figures/pareto_frontier.png
+!results/figures/radar_chart_weights.png
+!results/figures/drift_failover_timeline.png
+
+# Presentation Figures (QWS)
+!results/figures/project_results_overview.png
+!results/figures/qws_regret_heatmap.png
+!results/figures/qws_regret_distribution.png
+
+# Extended Analysis
 !results/figures/regret_by_task_kind.png
 !results/figures/agent_latency_by_condition.png
 !results/figures/strategy_selection_frequency.png
 !results/figures/drift_trace_example.png
+
+# WS-DREAM Validation (If generated)
 !results/figures/wsdream_complete_comparison.png
-!results/figures/project_results_overview.png
-!results/figures/qws_regret_heatmap.png
-!results/figures/qws_regret_distribution.png
 !results/figures/wsdream_temporal_behavior.png
 !results/figures/wsdream_profile_comparison.png
-
-# local config overrides / secrets
-config.local.yaml
-.env
-
-.venv/
-venv/
-*.egg-info/
-build/
-dist/
