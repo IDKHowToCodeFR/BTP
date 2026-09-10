@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import abc
 import os
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 
 class LLMBackend(abc.ABC):
     @abc.abstractmethod
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """Return the raw text of the model's response."""
+    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
+        """Return the raw text of the model's response and a dictionary of token usage."""
         raise NotImplementedError
 
     @property
@@ -66,7 +66,7 @@ class AnthropicBackend(LLMBackend):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
+    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -74,7 +74,12 @@ class AnthropicBackend(LLMBackend):
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        return "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+        usage = {
+            "prompt_tokens": resp.usage.input_tokens if hasattr(resp, "usage") else 0,
+            "completion_tokens": resp.usage.output_tokens if hasattr(resp, "usage") else 0,
+        }
+        return text, usage
 
 
 class OpenAIBackend(LLMBackend):
@@ -103,7 +108,7 @@ class OpenAIBackend(LLMBackend):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
+    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
         resp = self._client.chat.completions.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -113,7 +118,12 @@ class OpenAIBackend(LLMBackend):
                 {"role": "user", "content": user_prompt},
             ],
         )
-        return resp.choices[0].message.content or ""
+        text = resp.choices[0].message.content or ""
+        usage = {
+            "prompt_tokens": resp.usage.prompt_tokens if hasattr(resp, "usage") and resp.usage else 0,
+            "completion_tokens": resp.usage.completion_tokens if hasattr(resp, "usage") and resp.usage else 0,
+        }
+        return text, usage
 
 
 class OllamaBackend(LLMBackend):
@@ -134,25 +144,43 @@ class OllamaBackend(LLMBackend):
         self.temperature = temperature
         self.timeout = timeout
 
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
+    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
         import requests
+        import time
 
-        resp = requests.post(
-            f"{self.host}/api/chat",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "options": {"temperature": self.temperature},
-            },
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("message", {}).get("content", "")
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{self.host}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "stream": False,
+                        "options": {"temperature": self.temperature},
+                    },
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                text = data.get("message", {}).get("content", "")
+                
+                # Ollama prompt/completion eval count
+                usage = {
+                    "prompt_tokens": data.get("prompt_eval_count", 0),
+                    "completion_tokens": data.get("eval_count", 0),
+                }
+                return text, usage
+                
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"Ollama backend failed after {max_retries} attempts: {e}") from e
+                
+                # Exponential backoff: 3s, 6s, 12s, 24s...
+                time.sleep(3 * (2 ** attempt))
 
 
 class MockBackend(LLMBackend):
@@ -188,14 +216,15 @@ class MockBackend(LLMBackend):
         self._responder = responder
         self._call_count = 0
 
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
+    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
         self._call_count += 1
+        usage = {"prompt_tokens": 10, "completion_tokens": 20}
         if self._responder is not None:
-            return self._responder(system_prompt, user_prompt)
+            return self._responder(system_prompt, user_prompt), usage
         if self._fixed_response is not None:
-            return self._fixed_response
+            return self._fixed_response, usage
         idx = min(self._call_count - 1, len(self._responses) - 1)
-        return self._responses[idx]
+        return self._responses[idx], usage
 
 
 def build_backend_from_config(config: dict) -> LLMBackend:
