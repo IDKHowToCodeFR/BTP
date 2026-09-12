@@ -90,7 +90,7 @@ def build_prompt(
 
     memory_section = ""
     if memory_digest.strip():
-        memory_section = f"Relevant past decisions and their outcomes:\n{memory_digest}\n\n"
+        memory_section = f"Examples of past similar tasks and valid JSON outputs (use these as a reference for formatting and reasoning):\n{memory_digest}\n\n"
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         task_description=task_description,
@@ -143,16 +143,16 @@ def get_agent_decision_raw(
     attribute_cols: Sequence[str],
     memory_digest: str = "",
     tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
-) -> Tuple[dict, str]:
+) -> Tuple[dict, str, dict]:
     """Build the prompt, call the backend, and parse its response.
 
-    Returns (parsed_dict, raw_text). Raises LLMOutputParseError if the
+    Returns (parsed_dict, raw_text, usage_dict). Raises LLMOutputParseError if the
     response can't be parsed -- callers should catch this and route into
     the validation/fallback path (agent/controller.py does this).
     """
     system_prompt, user_prompt = build_prompt(
         task_description, perception, attribute_cols, memory_digest, tool_menu
     )
-    raw_text = backend.complete(system_prompt, user_prompt)
+    raw_text, usage_dict = backend.complete(system_prompt, user_prompt)
     parsed = parse_llm_json(raw_text)
-    return parsed, raw_text
+    return parsed, raw_text, usage_dict
