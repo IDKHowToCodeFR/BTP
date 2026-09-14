@@ -21,8 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 
 from agentic_selection.agent import AgentController, build_backend_from_config
+from agentic_selection.agent.controller import RAGAgentController
 from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
-from agentic_selection.evaluation import run_drift_protocol
+from agentic_selection.evaluation.protocol import run_drift_protocol, DRIFT_RESULT_FIELDS
+from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks import TASK_PROFILES
 from agentic_selection.utils import load_config, setup_logging
 
@@ -79,16 +81,28 @@ def main() -> int:
         tool_menu=tuple(config["agent"]["tool_menu"]),
         k_memory=config["agent"]["k_memory"],
     )
+    rag_controller = RAGAgentController(
+        backend=backend,
+        attribute_cols=QWS_ATTRIBUTE_COLUMNS,
+        memory_path=memory_path,
+        tool_menu=tuple(config["agent"]["tool_menu"]),
+        k_memory=config["agent"]["k_memory"],
+    )
 
     results_dir = project_root / config["paths"]["results_dir"]
     results_dir.mkdir(parents=True, exist_ok=True)
     output_csv = results_dir / "drift_results.csv"
 
     print(f"\nRunning (resumable, writing incrementally to {output_csv}) ...")
+    storage = CsvStorage(
+        csv_path=output_csv,
+        key_columns=["task_key", "trial_seed", "condition"],
+        fieldnames=DRIFT_RESULT_FIELDS
+    )
     results = run_drift_protocol(
         norm_df,
         QWS_ATTRIBUTE_COLUMNS,
-        output_csv,
+        storage,
         controller,
         n_trials=n_trials,
         pool_size=dcfg["pool_size"],
@@ -99,6 +113,7 @@ def main() -> int:
         static_reevaluation_period=dcfg["static_reevaluation_period"],
         base_seed=dcfg["base_seed"],
         is_synthetic_data=is_synthetic,
+        rag_controller=rag_controller,
     )
     print(f"\nDone. {len(results)} total trial rows in {output_csv}")
     print("Next: python scripts/06_generate_report.py")
