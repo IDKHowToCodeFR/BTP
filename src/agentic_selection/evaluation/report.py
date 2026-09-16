@@ -132,12 +132,26 @@ def render_markdown_tables(
     drift_df: pd.DataFrame | None,
     allow_synthetic: bool = False,
     wsdream_df: pd.DataFrame | None = None,
+    config: dict | None = None,
 ) -> str:
     """Render Tables 5.1-5.3 (and, if wsdream_df is given, 5.4) as
     GitHub-flavored markdown, ready to paste into
     paper/agentic_cloud_selection_paper.md replacing the Section 5
     placeholders."""
     parts = []
+    
+    if config:
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        parts.append(
+            f"<!--\n"
+            f"Report Generated: {timestamp}\n"
+            f"LLM Provider: {config.get('llm', {}).get('provider', 'unknown')}\n"
+            f"LLM Model: {config.get('llm', {}).get('model', 'unknown')}\n"
+            f"Note: This header captures the experimental environment that produced these results.\n"
+            f"-->\n"
+        )
+
     if bool(stable_df.get("is_synthetic_data", pd.Series(dtype=bool)).any()):
         parts.append(
             "> **WARNING: these numbers include trials computed on SYNTHETIC "
@@ -173,6 +187,141 @@ def render_markdown_tables(
     return "\n".join(parts)
 
 
+def _plot_bar_chart(
+    df: pd.DataFrame,
+    metric_col: str,
+    conditions: list[str],
+    out_path: Path,
+    xlabel: str,
+    title: str,
+    subtitle: str,
+    fmt: str = ".4f",
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    means, errs, labels, colors = [], [], [], []
+    for cond in conditions:
+        sub = df[df["condition"] == cond][metric_col]
+        if len(sub) == 0:
+            continue
+        ci = mean_confidence_interval(sub.astype(float).tolist())
+        means.append(ci.mean)
+        errs.append(ci.mean - ci.lower)
+        labels.append(CONDITION_DISPLAY_NAMES[cond])
+        colors.append(CONDITION_COLORS[cond])
+    
+    if not means:
+        plt.close(fig)
+        return
+
+    bars = ax.barh(labels, means, xerr=errs, capsize=4, color=colors, height=0.62, zorder=3)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_title(title, pad=15)
+    ax.text(
+        0, 1.02, subtitle, transform=ax.transAxes, color="#5D6878", fontsize=10,
+    )
+    style_axis(ax)
+    add_bar_labels(ax, bars, fmt=fmt)
+    fig.tight_layout()
+    save_figure(fig, out_path)
+    plt.close(fig)
+
+def _plot_pareto_frontier(df: pd.DataFrame, out_path: Path):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for cond in CONDITION_ORDER:
+        sub = df[df["condition"] == cond]
+        if len(sub) == 0: continue
+        ax.scatter(sub["api_calls"].mean(), sub["regret"].mean(), label=CONDITION_DISPLAY_NAMES[cond], color=CONDITION_COLORS[cond], s=150, zorder=3)
+    ax.set_xlabel("Mean API Calls (Cost)")
+    ax.set_ylabel("Mean Regret (Quality - lower is better)")
+    ax.set_title("Cost vs. Quality Pareto Frontier", pad=15)
+    ax.text(0, 1.02, "Trade-off between operational cost and decision quality", transform=ax.transAxes, color="#5D6878", fontsize=10)
+    ax.legend()
+    style_axis(ax)
+    fig.tight_layout()
+    save_figure(fig, out_path)
+    plt.close(fig)
+
+def _plot_drift_timeline(drift_df: pd.DataFrame, out_path: Path):
+    import ast
+    import matplotlib.pyplot as plt
+    sub = drift_df[drift_df["condition"] == "agent_full"]
+    if len(sub) == 0: return
+    row = sub.iloc[0]
+    trace = ast.literal_eval(row["trace_json"])
+    rounds = list(range(1, len(trace) + 1))
+    
+    target_service_id = row["target_service_id"]
+    selections = [1 if t == target_service_id else 0 for t in trace]
+    
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    ax.step(rounds, selections, where='mid', color="#3b82f6", linewidth=2.5, zorder=3)
+    ax.fill_between(rounds, selections, step='mid', color="#3b82f6", alpha=0.1)
+    
+    ax.axvline(x=int(row["degrade_start_round"]), color="#ef4444", linestyle="--", linewidth=2, label="Drift Injection", zorder=2)
+    
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["Alternative Service", "Target Service"])
+    ax.set_xlabel("Evaluation Round")
+    ax.set_title(f"Live Failover Timeline (Profile: {row['profile']})", pad=15)
+    ax.text(0, 1.05, "Agent rapidly fails over to a new service when the target drops.", transform=ax.transAxes, color="#5D6878", fontsize=10)
+    ax.legend(loc="lower left")
+    style_axis(ax)
+    fig.tight_layout()
+    save_figure(fig, out_path)
+    plt.close(fig)
+
+def _plot_radar_chart(df: pd.DataFrame, out_path: Path):
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
+    sub = df[df["condition"] == "agent_full"]
+    if len(sub) == 0 or "weights_json" not in df.columns: return
+    
+    tasks_to_plot = ["batch_processing", "streaming", "compliance_sensitive_backend"]
+    data_to_plot = {}
+    attributes = None
+    for t in tasks_to_plot:
+        t_rows = sub[sub["task_key"] == t]
+        if len(t_rows) > 0:
+            w = json.loads(t_rows.iloc[0]["weights_json"])
+            if not attributes:
+                attributes = list(w.keys())
+            data_to_plot[t] = [w[a] for a in attributes]
+            
+    if not data_to_plot: return
+    
+    num_vars = len(attributes)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles += angles[:1]
+    
+    fig, ax = plt.subplots(figsize=(7, 6), subplot_kw=dict(polar=True))
+    colors = ["#3b82f6", "#ef4444", "#10b981"]
+    
+    for i, (t, w_vals) in enumerate(data_to_plot.items()):
+        vals = w_vals + w_vals[:1]
+        ax.plot(angles, vals, label=t, color=colors[i % len(colors)], linewidth=2)
+        ax.fill(angles, vals, color=colors[i % len(colors)], alpha=0.15)
+        
+    ax.set_xticks(angles[:-1])
+    # Replace underscores with spaces for prettier labels
+    pretty_attrs = [a.replace("_", " ").title() for a in attributes]
+    ax.set_xticklabels(pretty_attrs, size=9)
+    ax.set_title("Agent Inferred Attribute Weights", pad=20, weight="bold")
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+    fig.tight_layout()
+    
+    # polar plots don't play well with style_axis (it removes spines inconsistently), so we skip it
+    ax.spines['polar'].set_color('#E2E8F0')
+    ax.grid(color='#E2E8F0')
+    
+    save_figure(fig, out_path)
+    plt.close(fig)
+
+
 def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir: Path | str) -> list:
     """Save a small set of matplotlib figures to out_dir. Returns the
     list of file paths written. Uses the non-interactive Agg backend so
@@ -181,74 +330,97 @@ def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir
     import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     apply_publication_style()
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
 
-    # Regret by condition (aggregated across all task profiles)
-    fig, ax = plt.subplots(figsize=(8.4, 4.8))
-    means, errs, labels, colors = [], [], [], []
-    for cond in CONDITION_ORDER:
-        sub = stable_df[stable_df["condition"] == cond]["regret"]
-        if len(sub) == 0:
-            continue
-        ci = mean_confidence_interval(sub.tolist())
-        means.append(ci.mean)
-        errs.append(ci.mean - ci.lower)
-        labels.append(CONDITION_DISPLAY_NAMES[cond])
-        colors.append(CONDITION_COLORS[cond])
-    bars = ax.barh(labels, means, xerr=errs, capsize=4, color=colors, height=0.62, zorder=3)
-    ax.invert_yaxis()
-    ax.set_xlabel("Mean regret (95% CI) - lower is better")
-    ax.set_title("Decision Quality Across Methods", pad=15)
-    ax.text(
-        0,
-        1.02,
-        "Regret pooled across all task profiles",
-        transform=ax.transAxes,
-        color="#5D6878",
-        fontsize=10,
-    )
-    style_axis(ax)
-    add_bar_labels(ax, bars, fmt=".4f")
-    fig.tight_layout()
     p1 = out_dir / "regret_by_condition.png"
-    save_figure(fig, p1)
+    _plot_bar_chart(
+        df=stable_df,
+        metric_col="regret",
+        conditions=CONDITION_ORDER,
+        out_path=p1,
+        xlabel="Mean regret (95% CI) - lower is better",
+        title="Decision Quality Across Methods",
+        subtitle="Regret pooled across all task profiles",
+        fmt=".4f",
+    )
     written.append(p1)
 
+    agent_conditions = ["agent_weights_only", "agent_full"]
+    p_api = out_dir / "api_calls_by_condition.png"
+    _plot_bar_chart(
+        df=stable_df,
+        metric_col="api_calls",
+        conditions=agent_conditions,
+        out_path=p_api,
+        xlabel="Mean API calls (95% CI) - lower is better",
+        title="LLM Invocation Efficiency",
+        subtitle="Impact of Exact-Match Dictionary Caching",
+        fmt=".2f",
+    )
+    written.append(p_api)
+
+    p_lat = out_dir / "latency_by_condition.png"
+    _plot_bar_chart(
+        df=stable_df,
+        metric_col="latency_seconds",
+        conditions=agent_conditions,
+        out_path=p_lat,
+        xlabel="Mean latency in seconds (95% CI) - lower is better",
+        title="System Response Time",
+        subtitle="Impact of Exact-Match Dictionary Caching",
+        fmt=".2f",
+    )
+    written.append(p_lat)
+
     if drift_df is not None and len(drift_df) > 0:
-        fig, ax = plt.subplots(figsize=(8.4, 4.8))
-        means, errs, labels, colors = [], [], [], []
-        for cond in CONDITION_ORDER:
-            sub = drift_df[(drift_df["condition"] == cond) & (~drift_df["censored"].astype(bool))]
-            if len(sub) == 0:
-                continue
-            ci = mean_confidence_interval(sub["lag_rounds"].astype(float).tolist())
-            means.append(ci.mean)
-            errs.append(ci.mean - ci.lower)
-            labels.append(CONDITION_DISPLAY_NAMES[cond])
-            colors.append(CONDITION_COLORS[cond])
-        bars = ax.barh(labels, means, xerr=errs, capsize=4, color=colors, height=0.62, zorder=3)
-        ax.invert_yaxis()
-        ax.set_xlabel("Mean adaptation lag in rounds (95% CI) - lower is better")
-        ax.set_title("Response Speed After QoS Degradation", pad=15)
-        ax.text(
-            0,
-            1.02,
-            "Censored trials are excluded from the mean",
-            transform=ax.transAxes,
-            color="#5D6878",
-            fontsize=10,
-        )
-        style_axis(ax)
-        add_bar_labels(ax, bars, fmt=".1f")
-        fig.tight_layout()
         p2 = out_dir / "adaptation_lag_by_condition.png"
-        save_figure(fig, p2)
+        filtered_drift = drift_df[~drift_df["censored"].astype(bool)]
+        _plot_bar_chart(
+            df=filtered_drift,
+            metric_col="lag_rounds",
+            conditions=CONDITION_ORDER,
+            out_path=p2,
+            xlabel="Mean adaptation lag in rounds (95% CI) - lower is better",
+            title="Response Speed After QoS Degradation",
+            subtitle="Censored trials are excluded from the mean",
+            fmt=".1f",
+        )
         written.append(p2)
+
+    if "strategy" in stable_df.columns:
+        p_strat = out_dir / "strategy_selection_frequency.png"
+        agent_full_df = stable_df[stable_df["condition"] == "agent_full"]
+        if len(agent_full_df) > 0:
+            import matplotlib.pyplot as plt
+            counts = agent_full_df["strategy"].value_counts()
+            fig, ax = plt.subplots(figsize=(6, 4))
+            bars = ax.barh(counts.index.astype(str), counts.values, color="#3b82f6", height=0.5, zorder=3)
+            ax.invert_yaxis()
+            ax.set_xlabel("Number of times strategy was chosen")
+            ax.set_title("Agent (full) Strategy Selection Frequency", pad=15)
+            ax.text(0, 1.02, "Shows whether the agent relies exclusively on TOPSIS or explores others.", transform=ax.transAxes, color="#5D6878", fontsize=10)
+            style_axis(ax)
+            add_bar_labels(ax, bars, fmt=".0f")
+            fig.tight_layout()
+            save_figure(fig, p_strat)
+            plt.close(fig)
+            written.append(p_strat)
+
+    p_pareto = out_dir / "pareto_frontier.png"
+    _plot_pareto_frontier(stable_df, p_pareto)
+    written.append(p_pareto)
+
+    p_radar = out_dir / "radar_chart_weights.png"
+    _plot_radar_chart(stable_df, p_radar)
+    written.append(p_radar)
+
+    if drift_df is not None and len(drift_df) > 0:
+        p_timeline = out_dir / "drift_failover_timeline.png"
+        _plot_drift_timeline(drift_df, p_timeline)
+        written.append(p_timeline)
 
     return written

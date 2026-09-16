@@ -55,7 +55,13 @@ def main() -> int:
         )
 
     try:
-        md = render_markdown_tables(stable_df, drift_df, allow_synthetic=args.allow_synthetic, wsdream_df=wsdream_df)
+        md = render_markdown_tables(
+            stable_df,
+            drift_df,
+            allow_synthetic=args.allow_synthetic,
+            wsdream_df=wsdream_df,
+            config=config,
+        )
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 1
