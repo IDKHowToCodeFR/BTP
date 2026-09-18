@@ -4,6 +4,36 @@ This project implements an **Agentic Cloud Service Selection** framework, compar
 
 ## Core Modules
 
+```mermaid
+flowchart TD
+    subgraph Data Pipeline
+        D1[QWS / WS-DREAM Data] --> D2[Normalize 0.0 - 1.0]
+        D2 --> D3[Candidate Pool]
+    end
+
+    subgraph Agentic Reasoning Loop (OODA)
+        D3 --> P[Perception Layer\n(Converts to Text)]
+        P --> RAG[RAG Agent Controller\n(Procedural Gen & TF-IDF)]
+        RAG --> R[Reasoning Layer\n(Prompt Construction)]
+        R <--> M[Memory\n(Past Decisions)]
+        R --> LLM((LLM Backend))
+        LLM --> R
+        R --> C[Controller\n(Dispatch Strategy)]
+    end
+
+    subgraph MCDM Evaluators
+        C -->|Strategy| S1(Weighted Sum)
+        C -->|Strategy| S2(TOPSIS)
+        C -->|Strategy| S3(Skyline + TOPSIS)
+    end
+
+    S1 --> OUT[Final Ranked Services]
+    S2 --> OUT
+    S3 --> OUT
+    
+    style LLM fill:#ff9900,stroke:#333,stroke-width:2px,color:black
+```
+
 The architecture is heavily modularized to ensure LLM integrations are strictly decoupled from evaluation logic. 
 
 ### 1. Data Pipeline
