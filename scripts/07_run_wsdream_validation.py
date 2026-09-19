@@ -40,7 +40,8 @@ from agentic_selection.data.wsdream_loader import (
     load_wsdream_dataset1,
     wsdream1_to_candidate_pool,
 )
-from agentic_selection.evaluation import run_stable_protocol
+from agentic_selection.evaluation.protocol import run_stable_protocol, STABLE_RESULT_FIELDS
+from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks.wsdream_profiles import WSDREAM_TASK_PROFILES
 from agentic_selection.utils import load_config, setup_logging
 
@@ -156,10 +157,15 @@ def main() -> int:
     output_csv = results_dir / output_name
 
     print(f"\nRunning (resumable, writing incrementally to {output_csv}) ...")
+    storage = CsvStorage(
+        csv_path=output_csv,
+        key_columns=["task_key", "pool_seed", "condition"],
+        fieldnames=STABLE_RESULT_FIELDS
+    )
     results = run_stable_protocol(
         norm_pool,
         WSDREAM_ATTRIBUTE_COLUMNS,
-        output_csv,
+        storage,
         controller,
         n_pools=n_pools,
         pool_size=pool_size,

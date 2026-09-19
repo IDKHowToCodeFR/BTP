@@ -16,6 +16,7 @@ re-running the same command resumes rather than restarts.
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -27,9 +28,10 @@ from agentic_selection.baselines.lookup_table import get_lookup_weights
 from agentic_selection.data.preprocessing import sample_candidate_pool
 from agentic_selection.drift.simulate import find_common_top_choice, simulate_drift_sequence
 from agentic_selection.evaluation.metrics import adaptation_lag, regret
+from agentic_selection.evaluation.storage import ExperimentStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
-STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
+STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent")
 STABLE_RESULT_FIELDS = [
     "task_key",
     "task_kind",  # "profile" | "held_out"
@@ -41,32 +43,18 @@ STABLE_RESULT_FIELDS = [
     "latency_seconds",
     "api_calls",
     "top_service_id",
+    "strategy",
+    "weights_json",
     "is_synthetic_data",
+    "prompt_tokens",
+    "completion_tokens",
 ]
-
-
-def _existing_trial_keys(csv_path: Path) -> Set[Tuple[str, int, str]]:
-    if not csv_path.exists():
-        return set()
-    df = pd.read_csv(csv_path)
-    if len(df) == 0:
-        return set()
-    return set(zip(df["task_key"], df["pool_seed"], df["condition"]))
-
-
-def _append_row(csv_path: Path, row: dict) -> None:
-    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=STABLE_RESULT_FIELDS)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
 
 
 def run_stable_protocol(
     normalized_df: pd.DataFrame,
     attribute_cols: Sequence[str],
-    output_csv: Path | str,
+    storage: ExperimentStorage,
     agent_controller: AgentController,
     n_pools: int = 30,
     pool_size: int = 20,
@@ -78,6 +66,7 @@ def run_stable_protocol(
     global_fixed_weights: Optional[Dict[str, float]] = None,
     lookup_table: Optional[Dict[str, Dict[str, float]]] = None,
     lookup_weights_fn: Optional[Callable[[str], Dict[str, float]]] = None,
+    rag_controller: Optional[AgentController] = None,
 ) -> pd.DataFrame:
     """Run the stable-condition protocol (paper §4.3) over every task
     profile plus the held-out set, `n_pools` independent pools each,
@@ -102,10 +91,6 @@ def run_stable_protocol(
     lookup_table = lookup_table if lookup_table is not None else TASK_LOOKUP_TABLE
     lookup_weights_fn = lookup_weights_fn if lookup_weights_fn is not None else get_lookup_weights
 
-    output_csv = Path(output_csv)
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    done = _existing_trial_keys(output_csv)
-
     all_tasks: List[Tuple[str, str, str]] = [
         (p.key, "profile", p.description) for p in task_profiles
     ] + [(f"held_out_{i}", "held_out", t.description) for i, t in enumerate(held_out_tasks)]
@@ -121,21 +106,26 @@ def run_stable_protocol(
             pool = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
 
             for condition in conditions:
-                if (task_key, seed, condition) in done:
+                if not storage.should_run({"task_key": task_key, "pool_seed": seed, "condition": condition}):
                     continue
 
                 if condition == "global_fixed":
                     scores = topsis(pool, global_fixed_weights, attribute_cols)
                     fallback, latency, api_calls = False, 0.0, 0
                     top_id = scores.sort_values(ascending=False).index[0]
+                    strategy = "topsis"
+                    w_json = json.dumps(global_fixed_weights)
                 elif condition == "lookup_table":
                     w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
                     scores = topsis(pool, w, attribute_cols)
                     fallback, latency, api_calls = False, 0.0, 0
                     top_id = scores.sort_values(ascending=False).index[0]
-                elif condition in ("agent_weights_only", "agent_full"):
+                    strategy = "topsis"
+                    w_json = json.dumps(w)
+                elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
                     strategy_override = "topsis" if condition == "agent_weights_only" else None
-                    decision = agent_controller.decide(
+                    ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
+                    decision = ctrl.decide(
                         task_description, pool, strategy_override=strategy_override
                     )
                     scores = decision.ranking
@@ -143,6 +133,10 @@ def run_stable_protocol(
                     latency = decision.latency_seconds
                     api_calls = decision.api_calls
                     top_id = decision.top_service_id()
+                    strategy = decision.strategy
+                    w_json = json.dumps(decision.weights)
+                    prompt_tokens = decision.prompt_tokens
+                    completion_tokens = decision.completion_tokens
                 else:
                     raise ValueError(f"unknown condition: {condition}")
 
@@ -158,15 +152,18 @@ def run_stable_protocol(
                     "latency_seconds": latency,
                     "api_calls": api_calls,
                     "top_service_id": top_id,
+                    "strategy": strategy,
+                    "weights_json": w_json,
                     "is_synthetic_data": is_synthetic_data,
+                    "prompt_tokens": prompt_tokens if condition in ("agent_weights_only", "agent_full", "rag_agent") else 0,
+                    "completion_tokens": completion_tokens if condition in ("agent_weights_only", "agent_full", "rag_agent") else 0,
                 }
-                _append_row(output_csv, row)
-                done.add((task_key, seed, condition))
+                storage.record(row)
 
-    return pd.read_csv(output_csv)
+    return storage.load_all()
 
 
-DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
+DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent")
 DRIFT_RESULT_FIELDS = [
     "task_key",
     "trial_seed",
@@ -179,31 +176,14 @@ DRIFT_RESULT_FIELDS = [
     "censored",
     "trace_json",
     "is_synthetic_data",
+    "n_switches",
 ]
-
-
-def _existing_drift_keys(csv_path: Path) -> Set[Tuple[str, int, str]]:
-    if not csv_path.exists():
-        return set()
-    df = pd.read_csv(csv_path)
-    if len(df) == 0:
-        return set()
-    return set(zip(df["task_key"], df["trial_seed"], df["condition"]))
-
-
-def _append_drift_row(csv_path: Path, row: dict) -> None:
-    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=DRIFT_RESULT_FIELDS)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
 
 
 def run_drift_protocol(
     normalized_df: pd.DataFrame,
     attribute_cols: Sequence[str],
-    output_csv: Path | str,
+    storage: ExperimentStorage,
     agent_controller: AgentController,
     n_trials: int = 5,
     pool_size: int = 20,
@@ -218,6 +198,7 @@ def run_drift_protocol(
     task_profiles: Sequence[TaskProfile] = TASK_PROFILES,
     degraded_attributes_by_profile: Dict[str, List[str]] | None = None,
     conditions: Sequence[str] = DRIFT_CONDITIONS,
+    rag_controller: Optional[AgentController] = None,
 ) -> pd.DataFrame:
     """Run the drift experiment (paper §3.8, §4.3) over every task
     profile, `n_trials` independent drift scenarios each. Resumable like
@@ -235,10 +216,6 @@ def run_drift_protocol(
     evaluation/metrics.py's module docstring for why this asymmetry is
     the correct, non-trivial way to operationalize this comparison.
     """
-    output_csv = Path(output_csv)
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    done = _existing_drift_keys(output_csv)
-
     for profile in task_profiles:
         default_degraded = (degraded_attributes_by_profile or {}).get(
             profile.key, profile.dominant_attributes[:2] or profile.dominant_attributes
@@ -248,7 +225,7 @@ def run_drift_protocol(
             task_key = profile.key
             trial_seed = base_seed + trial_i
 
-            if all((task_key, trial_seed, c) in done for c in conditions):
+            if all(not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
                 continue
 
             pool = None
@@ -284,7 +261,7 @@ def run_drift_protocol(
             )
 
             for condition in conditions:
-                if (task_key, trial_seed, condition) in done:
+                if not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
                     continue
 
                 if condition == "global_fixed":
@@ -294,9 +271,10 @@ def run_drift_protocol(
                     w = TASK_LOOKUP_TABLE[profile.key]
                     decide_fn = lambda p, w=w: topsis(p, w, attribute_cols).sort_values(ascending=False).index[0]
                     reeval = static_reevaluation_period
-                elif condition in ("agent_weights_only", "agent_full"):
+                elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
                     strategy_override = "topsis" if condition == "agent_weights_only" else None
-                    decide_fn = lambda p, so=strategy_override: agent_controller.decide(
+                    ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
+                    decide_fn = lambda p, so=strategy_override, c=ctrl: c.decide(
                         profile.description, p, strategy_override=so
                     ).top_service_id()
                     reeval = None
@@ -307,6 +285,9 @@ def run_drift_protocol(
                     seq.pools, target, degrade_start_round, decide_fn, reevaluation_period=reeval
                 )
 
+                trace = result.active_recommendation_trace
+                n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
+                
                 row = {
                     "task_key": task_key,
                     "trial_seed": trial_seed,
@@ -317,10 +298,10 @@ def run_drift_protocol(
                     "profile": degradation_profile,
                     "lag_rounds": result.lag_rounds if result.lag_rounds is not None else "",
                     "censored": result.censored,
-                    "trace_json": str(result.active_recommendation_trace),
+                    "trace_json": str(trace),
                     "is_synthetic_data": is_synthetic_data,
+                    "n_switches": n_switches,
                 }
-                _append_drift_row(output_csv, row)
-                done.add((task_key, trial_seed, condition))
+                storage.record(row)
 
-    return pd.read_csv(output_csv)
+    return storage.load_all()

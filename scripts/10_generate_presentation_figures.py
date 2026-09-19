@@ -26,7 +26,7 @@ from agentic_selection.evaluation.plot_style import (
     style_axis,
 )
 
-QWS_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full"]
+QWS_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent"]
 TEMPORAL_ORDER = [
     "global_static",
     "lookup_static",
@@ -34,6 +34,7 @@ TEMPORAL_ORDER = [
     "lookup_dynamic",
     "agent_weights_only",
     "agent_full",
+    "rag_agent",
 ]
 TASK_LABELS = {
     "streaming": "Streaming",
@@ -50,6 +51,11 @@ apply_publication_style()
 def _read_required(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Missing result file: {path}")
+    return pd.read_csv(path)
+
+def _read_optional(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
     return pd.read_csv(path)
 
 
@@ -91,22 +97,27 @@ def _barh_panel(ax, summary: pd.DataFrame, metric: str, title: str, xlabel: str,
 def plot_results_overview(
     stable: pd.DataFrame,
     drift: pd.DataFrame,
-    temporal: pd.DataFrame,
+    temporal: pd.DataFrame | None,
     out_path: Path,
 ) -> None:
     qws = _condition_summary(stable, "regret", QWS_ORDER)
     clean_drift = drift[~drift["censored"].astype(bool)].copy()
     lag = _condition_summary(clean_drift, "lag_rounds", QWS_ORDER)
-    temporal_regret = _condition_summary(temporal, "mean_regret", TEMPORAL_ORDER)
-    temporal_accuracy = _condition_summary(temporal, "top1_accuracy", TEMPORAL_ORDER)
-    temporal_accuracy["accuracy_percent"] = temporal_accuracy["top1_accuracy"] * 100
 
-    fig, axes = plt.subplots(2, 2, figsize=(15.5, 10.2))
+    has_temporal = temporal is not None
+    if has_temporal:
+        temporal_regret = _condition_summary(temporal, "mean_regret", TEMPORAL_ORDER)
+        temporal_accuracy = _condition_summary(temporal, "top1_accuracy", TEMPORAL_ORDER)
+        temporal_accuracy["accuracy_percent"] = temporal_accuracy["top1_accuracy"] * 100
+
+    fig, axes = plt.subplots(2 if has_temporal else 1, 2, figsize=(15.5, 10.2 if has_temporal else 5.5))
+    axes = np.atleast_2d(axes)
+    
     fig.suptitle("Context-Aware Cloud Service Selection | Results Overview", x=0.055, ha="left")
     fig.text(
         0.055,
-        0.938,
-        "QWS decision quality and adaptation, plus WS-DREAM temporal validation",
+        0.938 if has_temporal else 0.88,
+        "QWS decision quality and adaptation" + (", plus WS-DREAM temporal validation" if has_temporal else ""),
         color=MUTED,
         fontsize=11,
     )
@@ -114,32 +125,38 @@ def plot_results_overview(
     _barh_panel(axes[0, 0], qws, "regret", "A. QWS Decision Quality", "Mean regret - lower is better", ".4f")
     _barh_panel(axes[0, 1], lag, "lag_rounds", "B. Adaptation After QoS Drift", "Mean lag in rounds - lower is better", ".1f")
 
-    bars = axes[1, 0].barh(
-        temporal_accuracy["label"],
-        temporal_accuracy["accuracy_percent"],
-        color=temporal_accuracy["color"],
-        height=0.6,
-        zorder=3,
-    )
-    axes[1, 0].invert_yaxis()
-    axes[1, 0].set_title("C. WS-DREAM Temporal Top-1 Accuracy", pad=10)
-    axes[1, 0].set_xlabel("Optimal-service selections (%) - higher is better")
-    _label_horizontal_bars(
-        axes[1, 0],
-        bars,
-        [f"{value:.1f}%" for value in temporal_accuracy["accuracy_percent"]],
-        maximum=105,
-    )
-    style_axis(axes[1, 0])
+    if has_temporal:
+        bars = axes[1, 0].barh(
+            temporal_accuracy["label"],
+            temporal_accuracy["accuracy_percent"],
+            color=temporal_accuracy["color"],
+            height=0.6,
+            zorder=3,
+        )
+        axes[1, 0].invert_yaxis()
+        axes[1, 0].set_title("C. WS-DREAM Temporal Top-1 Accuracy", pad=10)
+        axes[1, 0].set_xlabel("Optimal-service selections (%) - higher is better")
+        _label_horizontal_bars(
+            axes[1, 0],
+            bars,
+            [f"{value:.1f}%" for value in temporal_accuracy["accuracy_percent"]],
+            maximum=100.0,
+        )
+        style_axis(axes[1, 0])
 
-    _barh_panel(
-        axes[1, 1],
-        temporal_regret,
-        "mean_regret",
-        "D. WS-DREAM Temporal Decision Quality",
-        "Mean regret across 64 slices - lower is better",
-        ".5f",
-    )
+        _barh_panel(
+            axes[1, 1],
+            temporal_regret,
+            "mean_regret",
+            "D. WS-DREAM Temporal Regret",
+            "Mean cumulative regret - lower is better",
+            ".4f",
+        )
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.035 if has_temporal else -0.05), ncol=4)
+    fig.tight_layout(rect=(0.03, 0.105 if has_temporal else 0.05, 0.99, 0.88 if has_temporal else 0.8), w_pad=4.2)
+    save_figure(fig, out_path, dpi=240)
 
     fig.text(
         0.055,
@@ -163,7 +180,7 @@ def plot_qws_heatmap(stable: pd.DataFrame, out_path: Path) -> None:
     display_tasks = [TASK_LABELS.get(key, key.replace("_", " ").title()) for key in pivot.index]
     display_conditions = [CONDITION_LABELS[key] for key in pivot.columns]
 
-    cmap = LinearSegmentedColormap.from_list("regret", ["#F7FBF9", "#F6D77A", "#D55E5E"])
+    cmap = plt.get_cmap("coolwarm")
     values = pivot.to_numpy(dtype=float)
     fig, ax = plt.subplots(figsize=(11.4, 8.8))
     image = ax.imshow(values, cmap=cmap, aspect="auto", vmin=0, vmax=float(np.nanmax(values)))
@@ -396,9 +413,9 @@ def main() -> int:
 
     stable = _read_required(tables / "stable_results.csv")
     drift = _read_required(tables / "drift_results.csv")
-    dataset1 = _read_required(tables / "wsdream_demo_results.csv")
-    dataset2 = _read_required(tables / "wsdream2_demo_stable_results.csv")
-    temporal = _read_required(tables / "wsdream2_demo_temporal_results.csv")
+    dataset1 = _read_optional(tables / "wsdream_demo_results.csv")
+    dataset2 = _read_optional(tables / "wsdream2_demo_stable_results.csv")
+    temporal = _read_optional(tables / "wsdream2_demo_temporal_results.csv")
 
     figures = [
         (
@@ -416,23 +433,31 @@ def main() -> int:
             figures_dir / "qws_regret_distribution.png",
             "Trial-level distributions showing variance, central tendency, and outliers.",
         ),
-        (
+    ]
+
+    if temporal is not None:
+        figures.append((
             "WS-DREAM Temporal Behavior",
             figures_dir / "wsdream_temporal_behavior.png",
             "Joint view of temporal regret, top-1 accuracy, and recommendation switching.",
-        ),
-        (
+        ))
+
+    if dataset1 is not None and dataset2 is not None:
+        figures.append((
             "WS-DREAM Workload Profiles",
             figures_dir / "wsdream_profile_comparison.png",
             "Static results for both WS-DREAM datasets split by workload profile.",
-        ),
-    ]
+        ))
 
-    plot_results_overview(stable, drift, temporal, figures[0][1])
-    plot_qws_heatmap(stable, figures[1][1])
-    plot_qws_distribution(stable, figures[2][1])
-    plot_wsdream_temporal_behavior(temporal, figures[3][1])
-    plot_wsdream_profiles(dataset1, dataset2, figures[4][1])
+    plot_results_overview(stable, drift, temporal, figures_dir / "project_results_overview.png")
+    plot_qws_heatmap(stable, figures_dir / "qws_regret_heatmap.png")
+    plot_qws_distribution(stable, figures_dir / "qws_regret_distribution.png")
+    
+    if temporal is not None:
+        plot_wsdream_temporal_behavior(temporal, figures_dir / "wsdream_temporal_behavior.png")
+    if dataset1 is not None and dataset2 is not None:
+        plot_wsdream_profiles(dataset1, dataset2, figures_dir / "wsdream_profile_comparison.png")
+
     write_figure_index(tables / "presentation_figures.md", figures)
 
     for _, path, _ in figures:
