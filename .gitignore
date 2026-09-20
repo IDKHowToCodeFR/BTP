@@ -37,8 +37,14 @@ data/processed/*.pkl
 data/raw/wsdream1/
 data/raw/wsdream2/
 
-# Agent memory logs
+# Agent memory logs and caching
 memory_store/*.jsonl
+memory_store/*.db
+memory_store/*.sqlite
+*.db
+*.sqlite
+*.sqlite3
+llm_cache.db
 !memory_store/.gitkeep
 
 # -----------------------------------------------------------------------------

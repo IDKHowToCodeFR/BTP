@@ -1,21 +1,19 @@
-"""Reasoning module (paper §3.6): builds the prompt shown to the LLM and
-parses its structured JSON response.
+"""Reasoning module. Builds prompts and parses structured JSON responses from LLMs."""
+# ============================== #
+#         Reasoning Module       #
+# ============================== #
 
-The LLM's job is scoped narrowly and deliberately: infer attribute
-weights and pick a strategy from a fixed menu, and explain why. It never
-performs the ranking arithmetic itself -- that stays in baselines/,
-deterministic and auditable (see paper §1.3, §3.6).
-"""
+# --- Imports ---
 from __future__ import annotations
-
 import json
 import re
 from dataclasses import dataclass
-from typing import Sequence, Tuple
-
+from typing import Sequence, Tuple, Protocol
 from agentic_selection.agent.llm_backends import LLMBackend
 from agentic_selection.agent.perception import PoolPerception
+from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, get_lookup_weights
 
+# --- Globals & Errors ---
 DEFAULT_TOOL_MENU: Tuple[str, ...] = ("weighted_sum", "topsis", "skyline_then_topsis")
 
 
@@ -34,36 +32,36 @@ class LLMOutputParseError(Exception):
         self.raw_text = raw_text
 
 
-SYSTEM_PROMPT_TEMPLATE = """You are the reasoning component of an agentic cloud-service-selection system.
+SYSTEM_PROMPT_TEMPLATE = """You = agent reasoner.
 
-Your ONLY job is to decide two things for the current request:
-1. How much weight (0 to 1, summing to 1 across all listed attributes) each QoS attribute should get, given the natural-language task description.
-2. Which ONE selection strategy from the fixed menu below best fits the current candidate pool's characteristics.
+Decide 2 things:
+1. QoS weights (0-1, sum to 1).
+2. 1 strategy from menu.
 
-You do NOT rank or score the candidate services yourself -- that is done afterward by deterministic code using the weights and strategy you provide. Do not invent attributes that are not in the provided list. Do not invent strategies that are not in the provided menu.
+DO NOT RANK. Output JSON only. No invented attrs/strategies.
 
-Available QoS attributes (weights must cover exactly these, nothing else): {attribute_list}
+Attrs (use exactly these): {attribute_list}
 
-Available strategies (pick exactly one):
-- "weighted_sum": simple linear combination of weighted attributes. Robust, transparent, works well when attributes don't trade off sharply against each other.
-- "topsis": ranks by geometric closeness to an ideal point and distance from a worst-case point. Tends to reward well-rounded candidates over candidates that are extreme on one attribute; often preferable when several near-dominant candidates make a simple sum hard to discriminate between.
-- "skyline_then_topsis": first filters to only the Pareto-optimal (non-dominated) candidates, then ranks that smaller set with TOPSIS. Useful when the pool is large and you want to first discard anything that is unambiguously worse than some other option on every attribute at once, before doing finer-grained ranking.
+Strategies (pick 1):
+- "weighted_sum": Linear. Good when no sharp trade-offs.
+- "topsis": Geometric distance to ideal. Good for well-rounded candidates.
+- "skyline_then_topsis": Pareto filter → TOPSIS. Good for large pools to drop dominated candidates first.
 
-Respond with ONLY a single JSON object and nothing else -- no markdown code fences, no preamble, no explanation outside the JSON. The JSON object must have exactly these three keys:
+Output strictly JSON:
 {{
-  "weights": {{"attribute_name": <float>, ...}},
-  "strategy": "<one of the strategy names above>",
-  "justification": "<one or two sentences explaining the weight and strategy choice in terms of the task description and pool characteristics>"
+  "weights": {{"attr": <float>, ...}},
+  "strategy": "<strategy_name>",
+  "justification": "<reason>"
 }}
 """
 
-USER_PROMPT_TEMPLATE = """Task description:
+USER_PROMPT_TEMPLATE = """Task:
 \"\"\"{task_description}\"\"\"
 
-Current candidate pool characteristics:
+Pool:
 {perception_text}
 
-{memory_digest_section}Respond now with only the JSON object described in the system prompt."""
+{memory_digest_section}Output JSON now."""
 
 
 def build_prompt(
@@ -82,15 +80,15 @@ def build_prompt(
         # that aren't actually on offer.
         lines = "\n".join(f'- "{t}"' for t in tool_menu)
         system_prompt = re.sub(
-            r"Available strategies.*?Respond with ONLY",
-            f"Available strategies (pick exactly one):\n{lines}\n\nRespond with ONLY",
+            r"Strategies \(pick 1\):.*?Output strictly JSON:",
+            f"Strategies (pick 1):\n{lines}\n\nOutput strictly JSON:",
             system_prompt,
             flags=re.DOTALL,
         )
 
     memory_section = ""
     if memory_digest.strip():
-        memory_section = f"Examples of past similar tasks and valid JSON outputs (use these as a reference for formatting and reasoning):\n{memory_digest}\n\n"
+        memory_section = f"Past valid JSON examples:\n{memory_digest}\n\n"
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         task_description=task_description,
@@ -109,6 +107,8 @@ def parse_llm_json(raw_text: str) -> dict:
     """
     text = raw_text.strip()
 
+    # Real-world LLMs often wrap JSON outputs in markdown blocks even when strictly prompted.
+    # We must scan for fences or naked braces before raising a parsing error.
     candidates = [text]
     fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     if fence_match:
@@ -136,23 +136,135 @@ def parse_llm_json(raw_text: str) -> dict:
     )
 
 
-def get_agent_decision_raw(
-    backend: LLMBackend,
-    task_description: str,
-    perception: PoolPerception,
-    attribute_cols: Sequence[str],
-    memory_digest: str = "",
-    tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
-) -> Tuple[dict, str, dict]:
-    """Build the prompt, call the backend, and parse its response.
+class ReasoningStrategy(Protocol):
+    def decide(
+        self,
+        backend: LLMBackend,
+        task_description: str,
+        perception: PoolPerception,
+        attribute_cols: Sequence[str],
+        memory_digest: str = "",
+        tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
+    ) -> Tuple[dict, str, dict]:
+        ...
 
-    Returns (parsed_dict, raw_text, usage_dict). Raises LLMOutputParseError if the
-    response can't be parsed -- callers should catch this and route into
-    the validation/fallback path (agent/controller.py does this).
+
+class DirectWeightReasoner:
+    """The original regression reasoning strategy: forces the LLM to output
+    continuous weights summing to 1.
     """
-    system_prompt, user_prompt = build_prompt(
-        task_description, perception, attribute_cols, memory_digest, tool_menu
-    )
-    raw_text, usage_dict = backend.complete(system_prompt, user_prompt)
-    parsed = parse_llm_json(raw_text)
-    return parsed, raw_text, usage_dict
+    def decide(
+        self,
+        backend: LLMBackend,
+        task_description: str,
+        perception: PoolPerception,
+        attribute_cols: Sequence[str],
+        memory_digest: str = "",
+        tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
+    ) -> Tuple[dict, str, dict]:
+        system_prompt, user_prompt = build_prompt(
+            task_description, perception, attribute_cols, memory_digest, tool_menu
+        )
+        
+        # We pass the default schema for DirectWeightReasoner
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "weights": {
+                    "type": "object",
+                    "additionalProperties": {"type": "number"}
+                },
+                "strategy": {"type": "string"},
+                "justification": {"type": "string"}
+            },
+            "required": ["weights", "strategy", "justification"]
+        }
+        raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)
+        parsed = parse_llm_json(raw_text)
+        return parsed, raw_text, usage_dict
+
+
+CLASSIFICATION_SYSTEM_PROMPT = """You = agent reasoner.
+
+Decide 2 things:
+1. Category from list.
+2. 1 strategy from menu.
+
+DO NOT RANK. Output JSON only. No invented categories.
+
+Categories (pick 1):
+{categories}
+
+Strategies (pick 1):
+- "weighted_sum": Linear. Good when no sharp trade-offs.
+- "topsis": Geometric distance to ideal. Good for well-rounded candidates.
+- "skyline_then_topsis": Pareto filter → TOPSIS. Good for large pools to drop dominated candidates first.
+
+Output strictly JSON:
+{{
+  "category": "<category_name>",
+  "strategy": "<strategy_name>",
+  "justification": "<reason>"
+}}
+"""
+
+class ClassificationReasoner:
+    """An SLM-optimized reasoning strategy that asks the LLM to classify the
+    task into a known profile, then maps that profile to optimal weights.
+    """
+    def decide(
+        self,
+        backend: LLMBackend,
+        task_description: str,
+        perception: PoolPerception,
+        attribute_cols: Sequence[str],
+        memory_digest: str = "",
+        tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
+    ) -> Tuple[dict, str, dict]:
+        categories = "\n".join(f"- {k}" for k in TASK_LOOKUP_TABLE.keys())
+        system_prompt = CLASSIFICATION_SYSTEM_PROMPT.format(categories=categories)
+        if set(tool_menu) != set(DEFAULT_TOOL_MENU):
+            lines = "\n".join(f'- "{t}"' for t in tool_menu)
+            system_prompt = re.sub(
+                r"Strategies \(pick 1\):.*?Output strictly JSON:",
+                f"Strategies (pick 1):\n{lines}\n\nOutput strictly JSON:",
+                system_prompt,
+                flags=re.DOTALL,
+            )
+
+        memory_section = ""
+        if memory_digest.strip():
+            memory_section = f"Past valid JSON examples:\n{memory_digest}\n\n"
+
+        user_prompt = USER_PROMPT_TEMPLATE.format(
+            task_description=task_description,
+            perception_text=perception.to_prompt_text(),
+            memory_digest_section=memory_section,
+        )
+
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "strategy": {"type": "string"},
+                "justification": {"type": "string"}
+            },
+            "required": ["category", "strategy", "justification"]
+        }
+
+        raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)
+        parsed = parse_llm_json(raw_text)
+
+        category = parsed.get("category", "")
+
+        # If the LLM hallucinates a category not in TASK_LOOKUP_TABLE despite strict 
+        # JSON schema enforcements, we fallback to the 'global' median weights to guarantee mathematical safety.
+        weights = get_lookup_weights(category, fallback="global")
+
+        final_dict = {
+            "weights": weights,
+            "strategy": parsed.get("strategy", ""),
+            "justification": parsed.get("justification", ""),
+            "category": category,
+        }
+        return final_dict, raw_text, usage_dict
