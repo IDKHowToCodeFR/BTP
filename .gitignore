@@ -90,3 +90,7 @@ results/figures/*.png
 !results/figures/wsdream_complete_comparison.png
 !results/figures/wsdream_temporal_behavior.png
 !results/figures/wsdream_profile_comparison.png
+
+# Cache files
+*.db
+llm_cache.db
