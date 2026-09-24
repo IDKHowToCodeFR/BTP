@@ -120,11 +120,9 @@ Edit `config.yaml`. Four options (`agent/llm_backends.py`):
 Start with `ollama` or `mock` to validate the whole pipeline for $0 before
 switching to a paid API for your real run.
 
-## RAG Agent & Architecture
+## Architecture
 
-This project features a fully local, zero-cost Retrieval-Augmented Generation (RAG) agent that converts numeric QoS data into procedural text descriptions, embeds them using `scikit-learn`'s TF-IDF, and retrieves the Top-5 most semantically relevant services for the LLM to rank. This drastically reduces the Mean Regret compared to blind baseline retrieval.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed breakdown of the OODA loop (Perception, Reasoning, Controller, Memory) and the zero-cost RAG integration.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed breakdown of the OODA loop (Perception, Reasoning, Controller, Memory).
 
 ## Quick start
 

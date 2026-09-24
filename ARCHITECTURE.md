@@ -13,8 +13,7 @@ flowchart TD
 
     subgraph AgenticLoop [Agentic Reasoning Loop OODA]
         D3 --> P["Perception Layer<br>(Converts to Text)"]
-        P --> RAG["RAG Agent Controller<br>(Procedural Gen & TF-IDF)"]
-        RAG --> R["Reasoning Layer<br>(Prompt Construction)"]
+        P --> R["Reasoning Layer<br>(Prompt Construction)"]
         R <--> M["Memory<br>(Past Decisions)"]
         R --> LLM((LLM Backend))
         LLM --> R
@@ -48,18 +47,11 @@ The agent simulates an OODA (Observe, Orient, Decide, Act) loop across several d
 - **`memory.py`**: The "Remember" phase. Stores historical decisions and justifications, allowing the agent to perform few-shot adaptation if drift is detected.
 - **`controller.py`**: The orchestrator. Coordinates perception, reasoning, and memory, and dispatches the final ranking to the underlying MCDM functions based on the LLM's strategy choice.
 
-### 3. RAG Agent Integration
-A critical extension to the framework is the **`RAGAgentController`** (found in `controller.py`). It simulates Semantic Search / Retrieval-Augmented Generation for cloud selection:
-- **Procedural Generation**: Because the original datasets only contain numeric data, this controller dynamically generates semantic text paragraphs for each service (e.g., converting a latency of `0.9` into `"excellent latency"`).
-- **TF-IDF Retrieval**: Uses `scikit-learn`'s `TfidfVectorizer` to embed these generated documents and the natural language `task_description`. 
-- **Filtering**: Computes cosine similarity and filters the candidate pool down to the Top-5 most semantically relevant services *before* passing them to the LLM. 
-- **Impact**: This zero-cost procedural RAG pipeline drastically lowered the RAG agent's regret (from >0.30 to ~0.12), proving that accurate semantic retrieval significantly improves downstream reasoning.
-
-### 4. Evaluation Protocols (`src/agentic_selection/evaluation/`)
+### 3. Evaluation Protocols (`src/agentic_selection/evaluation/`)
 - **`protocol.py`**: Defines `run_stable_protocol` (static context) and `run_drift_protocol` (dynamic context where optimal weights shift abruptly).
 - **`metrics.py`**: Calculates Regret, Top-1 Accuracy, and Adaptation Lag.
 
-### 5. Orchestration & Reporting
-- **`run.bat`**: The central execution script that drives the entire pipeline end-to-end, safely appending data and bypassing already-completed stages.
+### 4. Orchestration & Reporting
+- **`run_tiny_test.bat`** / **`run.bat`**: Central execution scripts that drive the entire pipeline end-to-end, safely appending data and cleanly archiving past results.
 - **`scripts/06_generate_report.py`**: Compiles CSV outputs into `report_tables.md`.
 - **`scripts/10_generate_presentation_figures.py`**: Generates publication-ready `matplotlib` charts, applying strict aesthetic guidelines (`plot_style.py`), including the diverging `coolwarm` heatmaps for task-level regret.
