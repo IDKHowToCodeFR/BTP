@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,12 +52,14 @@ class MemoryStore:
         if not self.path.exists():
             self.path.touch()
         self._records: Optional[List[MemoryRecord]] = None
+        self._lock = threading.Lock()
 
     def append(self, record: MemoryRecord) -> None:
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(record.to_json_line() + "\n")
-        if self._records is not None:
-            self._records.append(record)
+        with self._lock:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(record.to_json_line() + "\n")
+            if self._records is not None:
+                self._records.append(record)
 
     def load_all(self) -> List[MemoryRecord]:
         if self._records is not None:
@@ -146,18 +149,17 @@ def make_record(
     )
 
 
-def format_digest(records: List[MemoryRecord], max_chars: int = 2000) -> str:
+def format_digest(records: List[MemoryRecord], max_chars: int = 500) -> str:
     """Condense a handful of past records into a JSON digest for
     the reasoning prompt as few-shot examples."""
     if not records:
         return ""
-    lines = []
-    for r in records:
-        example = {
-            "weights": r.weights,
-            "strategy": r.strategy,
-            "justification": r.justification
-        }
-        lines.append(f'Task: "{r.task_description}"\nOutput:\n```json\n{json.dumps(example, indent=2)}\n```')
-    digest = "\n\n".join(lines)
+    # Use max 1 record to save SLM context tokens
+    r = records[0]
+    example = {
+        "weights": r.weights,
+        "strategy": r.strategy,
+        "justification": r.justification
+    }
+    digest = f'Task: "{r.task_description}"\nOutput: {json.dumps(example)}'
     return digest[:max_chars]

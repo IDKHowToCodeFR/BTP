@@ -1,35 +1,34 @@
-"""Agent controller (paper §3.1, §3.6): the perceive -> reason -> act ->
-remember loop, executed once per selection request.
+"""Agent Controller Module.
 
-    PERCEIVE  : agent.perception.summarize_pool
-    REASON    : agent.reasoning.get_agent_decision_raw + agent.validation
-    ACT       : baselines.{weighted_sum,topsis,skyline_then_topsis}
-    REMEMBER  : agent.memory.MemoryStore
-
-This module intentionally contains no LLM-specific or dataset-specific
-logic of its own -- it only orchestrates the four modules above, which is
-what keeps each of them independently testable (see tests/).
+Orchestrates the Perceive -> Reason -> Act -> Remember loop for the agent.
 """
+# ============================== #
+#       Controller Module        #
+# ============================== #
+
+# --- Imports ---
 from __future__ import annotations
-
 import time
+import sqlite3
+import json
+import threading
+from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Sequence
-
+from typing import Callable, Dict, Optional, Sequence, Protocol
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
 from agentic_selection.agent.llm_backends import LLMBackend
 from agentic_selection.agent.memory import MemoryStore, format_digest, make_record
 from agentic_selection.agent.perception import PoolPerception, summarize_pool
 from agentic_selection.agent.reasoning import (
     DEFAULT_TOOL_MENU,
     LLMOutputParseError,
-    get_agent_decision_raw,
+    ReasoningStrategy,
+    DirectWeightReasoner,
 )
 from agentic_selection.agent.validation import ValidationResult, validate_agent_output
 from agentic_selection.baselines import skyline_then_topsis, topsis, weighted_sum
+
+# --- Action Dispatch ---
 
 ACTION_DISPATCH: Dict[str, Callable[[pd.DataFrame, dict, Sequence[str]], pd.Series]] = {
     "weighted_sum": weighted_sum,
@@ -62,6 +61,43 @@ class AgentDecision:
         return self.top(1)[0]
 
 
+
+
+
+class SQLiteCache:
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+
+        # A threading lock is required here to ensure multiple worker 
+        # threads don't corrupt the DB during concurrent cache writes.
+        self._lock = threading.Lock()
+        conn = sqlite3.connect(self.path)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, val TEXT)")
+        finally:
+            conn.close()
+            
+    def get(self, key: str) -> Optional[dict]:
+        with self._lock:
+            conn = sqlite3.connect(self.path)
+            try:
+                cur = conn.execute("SELECT val FROM cache WHERE key = ?", (key,))
+                row = cur.fetchone()
+                return json.loads(row[0]) if row else None
+            finally:
+                conn.close()
+                
+    def set(self, key: str, val: dict) -> None:
+        with self._lock:
+            conn = sqlite3.connect(self.path)
+            try:
+                conn.execute("INSERT OR REPLACE INTO cache VALUES (?, ?)", (key, json.dumps(val)))
+                conn.commit()
+            finally:
+                conn.close()
+
+
 class AgentController:
     """Stateful across calls only via its MemoryStore -- everything else
     (backend, attribute schema, tool menu) is fixed at construction time.
@@ -74,13 +110,16 @@ class AgentController:
         memory_path,
         tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
         k_memory: int = 3,
+        reasoning_strategy: Optional[ReasoningStrategy] = None,
     ):
         self.backend = backend
         self.attribute_cols = list(attribute_cols)
         self.memory = MemoryStore(memory_path)
         self.tool_menu = tuple(tool_menu)
         self.k_memory = k_memory
-        self._llm_cache = {}
+        self.reasoning_strategy = reasoning_strategy or DirectWeightReasoner()
+        cache_path = Path(memory_path).parent / "llm_cache.db"
+        self._llm_cache = SQLiteCache(cache_path)
 
     def decide(
         self,
@@ -106,6 +145,7 @@ class AgentController:
             ... whether memory-informed decisions measurably outperformed
             memory-free ones").
         """
+        original_index = candidate_pool.index
         perception = summarize_pool(candidate_pool, self.attribute_cols)
 
         digest = ""
@@ -117,25 +157,27 @@ class AgentController:
         api_calls = 0
         prompt_tokens = 0
         completion_tokens = 0
-        cache_key = (task_description, perception.to_prompt_text(), digest)
-        if cache_key in self._llm_cache:
-            parsed, raw_text, usage_dict = self._llm_cache[cache_key]
+        cache_key = json.dumps((task_description, perception.to_prompt_text(), digest))
+        
+        cached_result = self._llm_cache.get(cache_key)
+        if cached_result is not None:
+            parsed, raw_text, usage_dict = cached_result["parsed"], cached_result["raw_text"], cached_result["usage_dict"]
             prompt_tokens = usage_dict.get("prompt_tokens", 0)
             completion_tokens = usage_dict.get("completion_tokens", 0)
         else:
             try:
-                parsed, raw_text, usage_dict = get_agent_decision_raw(
+                parsed, raw_text, usage_dict = self.reasoning_strategy.decide(
                     self.backend, task_description, perception, self.attribute_cols, digest, self.tool_menu
                 )
                 api_calls = 1
                 prompt_tokens = usage_dict.get("prompt_tokens", 0)
                 completion_tokens = usage_dict.get("completion_tokens", 0)
-                self._llm_cache[cache_key] = (parsed, raw_text, usage_dict)
+                self._llm_cache.set(cache_key, {"parsed": parsed, "raw_text": raw_text, "usage_dict": usage_dict})
             except LLMOutputParseError as e:
                 parsed, raw_text = None, e.raw_text
                 api_calls = 1
                 usage_dict = {"prompt_tokens": 0, "completion_tokens": 0}
-                self._llm_cache[cache_key] = (parsed, raw_text, usage_dict)
+                self._llm_cache.set(cache_key, {"parsed": parsed, "raw_text": raw_text, "usage_dict": usage_dict})
         latency = time.time() - t0
 
         validated: ValidationResult = validate_agent_output(
@@ -163,6 +205,11 @@ class AgentController:
         if use_memory:
             self.memory.append(record)
 
+        if len(ranking) < len(original_index):
+            padded_ranking = pd.Series(0.0, index=original_index)
+            padded_ranking.update(ranking)
+            ranking = padded_ranking
+
         return AgentDecision(
             record_id=record.record_id,
             task_description=task_description,
@@ -179,57 +226,3 @@ class AgentController:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
-
-
-class RAGAgentController(AgentController):
-    """A RAG (Retrieval-Augmented Generation) agent that simulates semantic search
-    over service documentation before passing a filtered subset to the LLM.
-    """
-    
-    def decide(
-        self,
-        task_description: str,
-        candidate_pool: pd.DataFrame,
-        strategy_override: Optional[str] = None,
-        use_memory: bool = True,
-    ) -> AgentDecision:
-        # 1. Simulate Semantic Retrieval via Procedural Document Generation
-        # Convert numerical QoS into text descriptions
-        documents = []
-        for service_id, row in candidate_pool.iterrows():
-            desc_parts = [f"Service {service_id}"]
-            for col in self.attribute_cols:
-                val = row[col]
-                # In normalized data, 1.0 is best. 
-                if val > 0.8: qual = "excellent"
-                elif val > 0.6: qual = "good"
-                elif val > 0.4: qual = "average"
-                elif val > 0.2: qual = "below average"
-                else: qual = "poor"
-                
-                # Format feature name: "response_time" -> "response time"
-                feature = col.replace("_", " ")
-                desc_parts.append(f"{qual} {feature}")
-            documents.append(". ".join(desc_parts) + ".")
-            
-        # 2. TF-IDF Retrieval
-        vectorizer = TfidfVectorizer(stop_words='english')
-        doc_vectors = vectorizer.fit_transform(documents)
-        query_vector = vectorizer.transform([task_description])
-        
-        similarities = cosine_similarity(query_vector, doc_vectors).flatten()
-        top_k = min(5, len(candidate_pool))
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        
-        filtered_pool = candidate_pool.iloc[top_indices].copy()
-        
-        # 2. Base Agent Decision on the retrieved subset
-        decision = super().decide(task_description, filtered_pool, strategy_override, use_memory)
-        
-        # 3. Re-integrate into full pool ranking
-        # Any service that wasn't retrieved gets a score of 0
-        padded_ranking = pd.Series(0.0, index=candidate_pool.index)
-        padded_ranking.update(decision.ranking)
-        decision.ranking = padded_ranking
-        
-        return decision

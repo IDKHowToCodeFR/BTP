@@ -1,38 +1,25 @@
-"""LLM backend abstraction.
+"""LLM Backend Providers.
 
-The agent's reasoning module (reasoning.py) only ever calls
-``backend.complete(system_prompt, user_prompt) -> str``; it does not know
-or care which provider is behind that call. Four backends are provided:
-
-- AnthropicBackend: budget-tier Claude model by default (see MODEL
-  NOTE below) via the official `anthropic` package.
-- OpenAIBackend: any OpenAI-compatible chat model via the `openai`
-  package (also works against many self-hosted OpenAI-compatible
-  servers by overriding `base_url`).
-- OllamaBackend: a locally-running model (e.g. Llama 3.1 8B) via
-  Ollama's local HTTP API, for zero per-call API cost.
-- MockBackend: fully deterministic, no network call, no API key. Used
-  in this project's own test suite, and useful for wiring-up an
-  end-to-end dry run before spending any real API budget.
-
-MODEL NOTE: the default Anthropic model string below
-("claude-haiku-4-5-20251001") is the current budget/low-latency tier
-Claude model as of this project being built. Model names change over
-time -- if this string 404s for you, check
-https://docs.claude.com for the current model list and pass a different
-`model=` argument; nothing else in this codebase needs to change.
+Provides an abstract LLMBackend and concrete implementations (Anthropic, OpenAI, Ollama, Mock).
 """
-from __future__ import annotations
+# ============================== #
+#         LLM Backends Module    #
+# ============================== #
 
+# --- Imports ---
+from __future__ import annotations
 import abc
 import os
+import time
+import requests
 from typing import Callable, List, Optional, Sequence, Tuple
 
-
+# --- Base Interface ---
 class LLMBackend(abc.ABC):
     @abc.abstractmethod
-    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
-        """Return the raw text of the model's response and a dictionary of token usage."""
+    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
+        # Abstracted to decouple the agent logic from the specific LLM API provider, 
+        # enabling seamless swapping of OpenAI/Anthropic/Ollama without changing core logic.
         raise NotImplementedError
 
     @property
@@ -66,7 +53,7 @@ class AnthropicBackend(LLMBackend):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
+    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -108,7 +95,7 @@ class OpenAIBackend(LLMBackend):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
+    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
         resp = self._client.chat.completions.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -143,15 +130,26 @@ class OllamaBackend(LLMBackend):
         self.host = host.rstrip("/")
         self.temperature = temperature
         self.timeout = timeout
+        self._session = requests.Session()
 
-    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
-        import requests
-        import time
+    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
+        schema = json_schema if json_schema is not None else {
+            "type": "object",
+            "properties": {
+                "weights": {
+                    "type": "object",
+                    "additionalProperties": {"type": "number"}
+                },
+                "strategy": {"type": "string"},
+                "justification": {"type": "string"}
+            },
+            "required": ["weights", "strategy", "justification"]
+        }
 
         max_retries = 5
         for attempt in range(max_retries):
             try:
-                resp = requests.post(
+                resp = self._session.post(
                     f"{self.host}/api/chat",
                     json={
                         "model": self.model,
@@ -161,6 +159,7 @@ class OllamaBackend(LLMBackend):
                         ],
                         "stream": False,
                         "options": {"temperature": self.temperature},
+                        "format": schema,
                     },
                     timeout=self.timeout,
                 )
@@ -216,7 +215,7 @@ class MockBackend(LLMBackend):
         self._responder = responder
         self._call_count = 0
 
-    def complete(self, system_prompt: str, user_prompt: str) -> Tuple[str, dict]:
+    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
         self._call_count += 1
         usage = {"prompt_tokens": 10, "completion_tokens": 20}
         if self._responder is not None:
