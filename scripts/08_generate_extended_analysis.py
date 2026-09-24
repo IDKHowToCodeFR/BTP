@@ -127,7 +127,7 @@ def _plot_latency(stable: pd.DataFrame, out_path: Path) -> pd.DataFrame:
         "Agent Decision Latency",
         "Mean wall-clock time per decision (seconds) - lower is better",
         colors,
-        ".3f",
+        ".4f",
     )
     return agg
 

@@ -17,7 +17,6 @@ CONDITION_LABELS = {
     "lookup_table": "Lookup table",
     "agent_weights_only": "Agent: weights only",
     "agent_full": "Agent: full",
-    "rag_agent": "Agent: RAG",
     "global_static": "Global baseline: static",
     "lookup_static": "Lookup baseline: static",
     "global_dynamic": "Global baseline: dynamic",
@@ -34,7 +33,6 @@ CONDITION_COLORS = {
     "lookup_dynamic": "#F0B44D",
     "agent_weights_only": "#009E73",
     "agent_full": "#4C6FB1",
-    "rag_agent": "#56B4E9",
 }
 
 ACCENT_COLORS = ("#4C6FB1", "#009E73", "#E69F00", "#CC79A7", "#56B4E9", "#F0B44D")

@@ -40,7 +40,7 @@ def test_run_stable_protocol_produces_expected_row_count(synthetic_qws_normalize
         n_pools=2, pool_size=10, held_out_tasks=small_held_out,
     )
     n_tasks = len(TASK_PROFILES) + len(small_held_out)
-    expected_rows = n_tasks * 2 * 5  # n_pools x 5 conditions
+    expected_rows = n_tasks * 2 * 4  # n_pools x 4 conditions
     assert len(df) == expected_rows
 
 
@@ -89,7 +89,7 @@ def test_run_drift_protocol_produces_rows_for_each_condition(synthetic_qws_norma
         n_trials=1, pool_size=10, n_rounds=8, degrade_start_round=3,
         task_profiles=TASK_PROFILES[:2],
     )
-    assert set(df["condition"].unique()) <= {"global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent"}
+    assert set(df["condition"].unique()) <= {"global_fixed", "lookup_table", "agent_weights_only", "agent_full"}
     assert len(df) > 0
 
 

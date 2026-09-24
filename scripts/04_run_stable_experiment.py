@@ -27,8 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
-from agentic_selection.agent import AgentController, build_backend_from_config
-from agentic_selection.agent.controller import RAGAgentController
+from agentic_selection.agent import AgentController, build_backend_from_config, ClassificationReasoner
 from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
 from agentic_selection.evaluation.protocol import run_stable_protocol, STABLE_RESULT_FIELDS
 from agentic_selection.evaluation.storage import CsvStorage
@@ -86,13 +85,7 @@ def main() -> int:
         memory_path=memory_path,
         tool_menu=tuple(config["agent"]["tool_menu"]),
         k_memory=config["agent"]["k_memory"],
-    )
-    rag_controller = RAGAgentController(
-        backend=backend,
-        attribute_cols=QWS_ATTRIBUTE_COLUMNS,
-        memory_path=memory_path,
-        tool_menu=tuple(config["agent"]["tool_menu"]),
-        k_memory=config["agent"]["k_memory"],
+        reasoning_strategy=ClassificationReasoner(),
     )
 
     results_dir = project_root / config["paths"]["results_dir"]
@@ -114,7 +107,6 @@ def main() -> int:
         pool_size=pool_size,
         base_seed=base_seed,
         is_synthetic_data=is_synthetic,
-        rag_controller=rag_controller,
     )
     print(f"\nDone. {len(results)} total trial rows in {output_csv}")
     print("Next: python scripts/05_run_drift_experiment.py")

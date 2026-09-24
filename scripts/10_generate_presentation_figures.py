@@ -26,7 +26,7 @@ from agentic_selection.evaluation.plot_style import (
     style_axis,
 )
 
-QWS_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent"]
+QWS_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full"]
 TEMPORAL_ORDER = [
     "global_static",
     "lookup_static",
@@ -34,7 +34,6 @@ TEMPORAL_ORDER = [
     "lookup_dynamic",
     "agent_weights_only",
     "agent_full",
-    "rag_agent",
 ]
 TASK_LABELS = {
     "streaming": "Streaming",
@@ -268,6 +267,19 @@ def plot_qws_distribution(stable: pd.DataFrame, out_path: Path) -> None:
             edgecolors="#FFFFFF",
             linewidth=1.2,
             zorder=5,
+        )
+        import matplotlib.patheffects as pe
+        mean_val = float(np.mean(values))
+        ax.text(
+            position,
+            mean_val + 0.002 if mean_val > 0.005 else mean_val + 0.001,
+            f"{mean_val:.4f}",
+            ha="left",
+            va="bottom",
+            color=color,
+            fontsize=10,
+            fontweight="bold",
+            path_effects=[pe.withStroke(linewidth=3, foreground="#FFFFFF")]
         )
 
     ax.set_title("Trial-Level Regret Distribution", pad=18)

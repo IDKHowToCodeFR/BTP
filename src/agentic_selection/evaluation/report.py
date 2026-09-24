@@ -228,22 +228,6 @@ def _plot_bar_chart(
     save_figure(fig, out_path)
     plt.close(fig)
 
-def _plot_pareto_frontier(df: pd.DataFrame, out_path: Path):
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(7, 5))
-    for cond in CONDITION_ORDER:
-        sub = df[df["condition"] == cond]
-        if len(sub) == 0: continue
-        ax.scatter(sub["api_calls"].mean(), sub["regret"].mean(), label=CONDITION_DISPLAY_NAMES[cond], color=CONDITION_COLORS[cond], s=150, zorder=3)
-    ax.set_xlabel("Mean API Calls (Cost)")
-    ax.set_ylabel("Mean Regret (Quality - lower is better)")
-    ax.set_title("Cost vs. Quality Pareto Frontier", pad=15)
-    ax.text(0, 1.02, "Trade-off between operational cost and decision quality", transform=ax.transAxes, color="#5D6878", fontsize=10)
-    ax.legend()
-    style_axis(ax)
-    fig.tight_layout()
-    save_figure(fig, out_path)
-    plt.close(fig)
 
 def _plot_drift_timeline(drift_df: pd.DataFrame, out_path: Path):
     import ast
@@ -349,20 +333,9 @@ def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir
     )
     written.append(p1)
 
-    agent_conditions = ["agent_weights_only", "agent_full"]
-    p_api = out_dir / "api_calls_by_condition.png"
-    _plot_bar_chart(
-        df=stable_df,
-        metric_col="api_calls",
-        conditions=agent_conditions,
-        out_path=p_api,
-        xlabel="Mean API calls (95% CI) - lower is better",
-        title="LLM Invocation Efficiency",
-        subtitle="Impact of Exact-Match Dictionary Caching",
-        fmt=".2f",
-    )
-    written.append(p_api)
 
+
+    agent_conditions = ["agent_weights_only", "agent_full"]
     p_lat = out_dir / "latency_by_condition.png"
     _plot_bar_chart(
         df=stable_df,
@@ -372,7 +345,7 @@ def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir
         xlabel="Mean latency in seconds (95% CI) - lower is better",
         title="System Response Time",
         subtitle="Impact of Exact-Match Dictionary Caching",
-        fmt=".2f",
+        fmt=".4f",
     )
     written.append(p_lat)
 
@@ -410,9 +383,6 @@ def make_figures(stable_df: pd.DataFrame, drift_df: pd.DataFrame | None, out_dir
             plt.close(fig)
             written.append(p_strat)
 
-    p_pareto = out_dir / "pareto_frontier.png"
-    _plot_pareto_frontier(stable_df, p_pareto)
-    written.append(p_pareto)
 
     p_radar = out_dir / "radar_chart_weights.png"
     _plot_radar_chart(stable_df, p_radar)

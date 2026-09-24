@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import abc
 import csv
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -44,6 +45,7 @@ class CsvStorage(ExperimentStorage):
         self.key_columns = list(key_columns)
         self.fieldnames = list(fieldnames)
         self._existing_keys: Optional[Set[Tuple]] = None
+        self._lock = threading.Lock()
 
     def _load_existing_keys(self) -> Set[Tuple]:
         if not self.csv_path.exists() or self.csv_path.stat().st_size == 0:
@@ -59,26 +61,28 @@ class CsvStorage(ExperimentStorage):
             return set()
 
     def should_run(self, key_dict: Dict[str, Any]) -> bool:
-        if self._existing_keys is None:
-            self._existing_keys = self._load_existing_keys()
-        
-        key_tuple = tuple(key_dict[k] for k in self.key_columns)
-        return key_tuple not in self._existing_keys
+        with self._lock:
+            if self._existing_keys is None:
+                self._existing_keys = self._load_existing_keys()
+            
+            key_tuple = tuple(key_dict[k] for k in self.key_columns)
+            return key_tuple not in self._existing_keys
 
     def record(self, row: Dict[str, Any]) -> None:
-        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-        write_header = not self.csv_path.exists() or self.csv_path.stat().st_size == 0
-        
-        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=self.fieldnames)
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
-        
-        # update internal cache so subsequent should_run checks are fast
-        if self._existing_keys is not None:
-            key_tuple = tuple(row[k] for k in self.key_columns)
-            self._existing_keys.add(key_tuple)
+        with self._lock:
+            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not self.csv_path.exists() or self.csv_path.stat().st_size == 0
+            
+            with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=self.fieldnames)
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+            
+            # update internal cache so subsequent should_run checks are fast
+            if self._existing_keys is not None:
+                key_tuple = tuple(row[k] for k in self.key_columns)
+                self._existing_keys.add(key_tuple)
 
     def load_all(self) -> pd.DataFrame:
         if not self.csv_path.exists() or self.csv_path.stat().st_size == 0:
