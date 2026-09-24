@@ -1,21 +1,17 @@
-"""Perception module (paper §3.6): turns a candidate pool into a compact
-numerical summary that (a) is shown to the LLM as context, and (b) is
-used as a feature vector for nearest-neighbor memory retrieval.
+"""Perception module. Converts candidate pools into numerical LLM context summaries."""
+# ============================== #
+#       Perception Module        #
+# ============================== #
 
-All of this operates on already-normalized, benefit-oriented [0, 1]
-columns (see data/preprocessing.py) so that variance/correlation values
-are comparable across different datasets and different attribute scales.
-"""
+# --- Imports ---
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Dict, List, Sequence
-
+from typing import Dict, List, Sequence, Protocol
 import numpy as np
 import pandas as pd
 
-
+# --- Data Structures ---
 @dataclass
 class PoolPerception:
     n_candidates: int
@@ -25,6 +21,7 @@ class PoolPerception:
     conflict_score: float
     outlier_fraction: float
     missing_fraction: float
+    prompt_text_override: str | None = None
 
     def to_vector(self) -> np.ndarray:
         """Fixed-length numeric feature vector for nearest-neighbor memory
@@ -48,6 +45,9 @@ class PoolPerception:
     def to_prompt_text(self) -> str:
         """Compact, human/LLM-readable rendering used inside the reasoning
         prompt (paper §3.6, perception summary component (b))."""
+        if self.prompt_text_override is not None:
+            return self.prompt_text_override
+            
         var_str = ", ".join(f"{c}={v:.3f}" for c, v in self.variance.items())
         top_conflicts = sorted(
             self.pairwise_correlation.items(), key=lambda kv: kv[1]
@@ -73,17 +73,33 @@ class PoolPerception:
 def _outlier_row_fraction(df: pd.DataFrame, attribute_cols: Sequence[str]) -> float:
     if len(df) == 0:
         return 0.0
-    is_outlier = pd.DataFrame(False, index=df.index, columns=list(attribute_cols))
-    for col in attribute_cols:
-        series = df[col].dropna()
-        if len(series) < 4:
-            continue
-        q1, q3 = series.quantile(0.25), series.quantile(0.75)
-        iqr = q3 - q1
-        if iqr <= 1e-12:
-            continue
-        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-        is_outlier.loc[series.index, col] = (series < lo) | (series > hi)
+        
+    sub = df[list(attribute_cols)]
+    
+    valid_counts = sub.count()
+    valid_cols = valid_counts[valid_counts >= 4].index
+    
+    if len(valid_cols) == 0:
+        return 0.0
+        
+    sub_valid = sub[valid_cols]
+    q1 = sub_valid.quantile(0.25)
+    q3 = sub_valid.quantile(0.75)
+    iqr = q3 - q1
+    
+    valid_cols = iqr[iqr > 1e-12].index
+    if len(valid_cols) == 0:
+        return 0.0
+        
+    sub_valid = sub[valid_cols]
+    q1 = q1[valid_cols]
+    q3 = q3[valid_cols]
+    iqr = iqr[valid_cols]
+    
+    lo = q1 - 1.5 * iqr
+    hi = q3 + 1.5 * iqr
+    
+    is_outlier = (sub_valid < lo) | (sub_valid > hi)
     return float(is_outlier.any(axis=1).mean())
 
 
@@ -114,12 +130,14 @@ def summarize_pool(
 
     variance = {c: float(sub[c].var(ddof=0)) if sub[c].notna().any() else 0.0 for c in attribute_cols}
 
+    corr_matrix = sub.corr()
+    
     pairwise_correlation: Dict[str, float] = {}
     for a, b in combinations(attribute_cols, 2):
         if sub[a].nunique() <= 1 or sub[b].nunique() <= 1:
             corr = 0.0
         else:
-            corr = sub[a].corr(sub[b])
+            corr = corr_matrix.loc[a, b]
             corr = 0.0 if pd.isna(corr) else float(corr)
         pairwise_correlation[f"{a}|{b}"] = corr
 
@@ -131,7 +149,7 @@ def summarize_pool(
     ref = missing_df.loc[:, attribute_cols] if missing_df is not None else sub
     missing_fraction = float(ref.isnull().mean().mean()) if len(ref) else 0.0
 
-    return PoolPerception(
+    p = PoolPerception(
         n_candidates=len(df),
         attribute_cols=attribute_cols,
         variance=variance,
@@ -140,3 +158,18 @@ def summarize_pool(
         outlier_fraction=outlier_fraction,
         missing_fraction=missing_fraction,
     )
+
+    if len(df) == 0:
+        p.prompt_text_override = "Candidate pool size: 0"
+        return p
+        
+    lines = [f"Candidate pool size: {len(df)}", "Attribute bounds:"]
+    for c in attribute_cols:
+        if sub[c].notna().any():
+            c_min, c_max = float(sub[c].min()), float(sub[c].max())
+            lines.append(f"  - {c}: [{c_min:.3f}, {c_max:.3f}]")
+        else:
+            lines.append(f"  - {c}: all missing")
+            
+    p.prompt_text_override = "\n".join(lines)
+    return p
