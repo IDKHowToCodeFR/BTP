@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import json
+import concurrent.futures
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -31,7 +32,7 @@ from agentic_selection.evaluation.metrics import adaptation_lag, regret
 from agentic_selection.evaluation.storage import ExperimentStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
-STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent")
+STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
 STABLE_RESULT_FIELDS = [
     "task_key",
     "task_kind",  # "profile" | "held_out"
@@ -66,7 +67,6 @@ def run_stable_protocol(
     global_fixed_weights: Optional[Dict[str, float]] = None,
     lookup_table: Optional[Dict[str, Dict[str, float]]] = None,
     lookup_weights_fn: Optional[Callable[[str], Dict[str, float]]] = None,
-    rag_controller: Optional[AgentController] = None,
 ) -> pd.DataFrame:
     """Run the stable-condition protocol (paper §4.3) over every task
     profile plus the held-out set, `n_pools` independent pools each,
@@ -99,71 +99,84 @@ def run_stable_protocol(
     for i, t in enumerate(held_out_tasks):
         reference_weights_by_key[f"held_out_{i}"] = lookup_table[t.nearest_profile_key]
 
-    for task_key, task_kind, task_description in all_tasks:
-        ref_weights = reference_weights_by_key[task_key]
-        for pool_i in range(n_pools):
-            seed = base_seed + pool_i
-            pool = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
+    def _run_single_condition(task_key, task_kind, task_description, seed, condition, ref_weights):
+        if not storage.should_run({"task_key": task_key, "pool_seed": seed, "condition": condition}):
+            return
 
-            for condition in conditions:
-                if not storage.should_run({"task_key": task_key, "pool_seed": seed, "condition": condition}):
-                    continue
+        pool = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
 
-                if condition == "global_fixed":
-                    scores = topsis(pool, global_fixed_weights, attribute_cols)
-                    fallback, latency, api_calls = False, 0.0, 0
-                    top_id = scores.sort_values(ascending=False).index[0]
-                    strategy = "topsis"
-                    w_json = json.dumps(global_fixed_weights)
-                elif condition == "lookup_table":
-                    w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
-                    scores = topsis(pool, w, attribute_cols)
-                    fallback, latency, api_calls = False, 0.0, 0
-                    top_id = scores.sort_values(ascending=False).index[0]
-                    strategy = "topsis"
-                    w_json = json.dumps(w)
-                elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
-                    strategy_override = "topsis" if condition == "agent_weights_only" else None
-                    ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
-                    decision = ctrl.decide(
-                        task_description, pool, strategy_override=strategy_override
+        if condition == "global_fixed":
+            scores = topsis(pool, global_fixed_weights, attribute_cols)
+            fallback, latency, api_calls = False, 0.0, 0
+            top_id = scores.sort_values(ascending=False).index[0]
+            strategy = "topsis"
+            w_json = json.dumps(global_fixed_weights)
+            prompt_tokens, completion_tokens = 0, 0
+        elif condition == "lookup_table":
+            w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
+            scores = topsis(pool, w, attribute_cols)
+            fallback, latency, api_calls = False, 0.0, 0
+            top_id = scores.sort_values(ascending=False).index[0]
+            strategy = "topsis"
+            w_json = json.dumps(w)
+            prompt_tokens, completion_tokens = 0, 0
+        elif condition in ("agent_weights_only", "agent_full"):
+            strategy_override = "topsis" if condition == "agent_weights_only" else None
+            decision = agent_controller.decide(
+                task_description, pool, strategy_override=strategy_override
+            )
+            scores = decision.ranking
+            fallback = decision.fallback_triggered
+            latency = decision.latency_seconds
+            api_calls = decision.api_calls
+            top_id = decision.top_service_id()
+            strategy = decision.strategy
+            w_json = json.dumps(decision.weights)
+            prompt_tokens = decision.prompt_tokens
+            completion_tokens = decision.completion_tokens
+        else:
+            raise ValueError(f"unknown condition: {condition}")
+
+        r = regret(pool, scores, ref_weights, attribute_cols)
+        row = {
+            "task_key": task_key,
+            "task_kind": task_kind,
+            "task_description": task_description,
+            "pool_seed": seed,
+            "condition": condition,
+            "regret": r,
+            "fallback_triggered": fallback,
+            "latency_seconds": latency,
+            "api_calls": api_calls,
+            "top_service_id": top_id,
+            "strategy": strategy,
+            "weights_json": w_json,
+            "is_synthetic_data": is_synthetic_data,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
+        storage.record(row)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for task_key, task_kind, task_description in all_tasks:
+            ref_weights = reference_weights_by_key[task_key]
+            for pool_i in range(n_pools):
+                seed = base_seed + pool_i
+                for condition in conditions:
+                    futures.append(
+                        executor.submit(
+                            _run_single_condition, task_key, task_kind, task_description, seed, condition, ref_weights
+                        )
                     )
-                    scores = decision.ranking
-                    fallback = decision.fallback_triggered
-                    latency = decision.latency_seconds
-                    api_calls = decision.api_calls
-                    top_id = decision.top_service_id()
-                    strategy = decision.strategy
-                    w_json = json.dumps(decision.weights)
-                    prompt_tokens = decision.prompt_tokens
-                    completion_tokens = decision.completion_tokens
-                else:
-                    raise ValueError(f"unknown condition: {condition}")
-
-                r = regret(pool, scores, ref_weights, attribute_cols)
-                row = {
-                    "task_key": task_key,
-                    "task_kind": task_kind,
-                    "task_description": task_description,
-                    "pool_seed": seed,
-                    "condition": condition,
-                    "regret": r,
-                    "fallback_triggered": fallback,
-                    "latency_seconds": latency,
-                    "api_calls": api_calls,
-                    "top_service_id": top_id,
-                    "strategy": strategy,
-                    "weights_json": w_json,
-                    "is_synthetic_data": is_synthetic_data,
-                    "prompt_tokens": prompt_tokens if condition in ("agent_weights_only", "agent_full", "rag_agent") else 0,
-                    "completion_tokens": completion_tokens if condition in ("agent_weights_only", "agent_full", "rag_agent") else 0,
-                }
-                storage.record(row)
+        # Ensure exceptions are raised
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
     return storage.load_all()
 
 
-DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full", "rag_agent")
+DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
 DRIFT_RESULT_FIELDS = [
     "task_key",
     "trial_seed",
@@ -198,7 +211,6 @@ def run_drift_protocol(
     task_profiles: Sequence[TaskProfile] = TASK_PROFILES,
     degraded_attributes_by_profile: Dict[str, List[str]] | None = None,
     conditions: Sequence[str] = DRIFT_CONDITIONS,
-    rag_controller: Optional[AgentController] = None,
 ) -> pd.DataFrame:
     """Run the drift experiment (paper §3.8, §4.3) over every task
     profile, `n_trials` independent drift scenarios each. Resumable like
@@ -216,92 +228,100 @@ def run_drift_protocol(
     evaluation/metrics.py's module docstring for why this asymmetry is
     the correct, non-trivial way to operationalize this comparison.
     """
-    for profile in task_profiles:
-        default_degraded = (degraded_attributes_by_profile or {}).get(
-            profile.key, profile.dominant_attributes[:2] or profile.dominant_attributes
+    def _run_single_drift_trial(profile, trial_i, default_degraded):
+        task_key = profile.key
+        trial_seed = base_seed + trial_i
+
+        if all(not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
+            return
+
+        pool = None
+        target = None
+        for attempt in range(max_seed_attempts_for_consensus):
+            candidate_seed = trial_seed * 1000 + attempt
+            candidate_pool = sample_candidate_pool(normalized_df, n=pool_size, seed=candidate_seed)
+            methods = {
+                "global_fixed": lambda p: topsis(p, GLOBAL_FIXED_WEIGHTS, attribute_cols),
+                "lookup_table": lambda p: topsis(p, TASK_LOOKUP_TABLE[profile.key], attribute_cols),
+            }
+            t = find_common_top_choice(candidate_pool, methods)
+            if t is not None:
+                pool, target = candidate_pool, t
+                break
+        if pool is None:
+            print(
+                f"[drift] profile={profile.key} trial={trial_i}: no consensus "
+                f"target found in {max_seed_attempts_for_consensus} seed attempts, skipping"
+            )
+            return
+
+        seq = simulate_drift_sequence(
+            pool,
+            attribute_cols,
+            target_service_id=target,
+            degraded_attributes=default_degraded,
+            n_rounds=n_rounds,
+            degrade_start_round=degrade_start_round,
+            profile=degradation_profile,
+            magnitude=degradation_magnitude,
+            seed=trial_seed,
         )
 
-        for trial_i in range(n_trials):
-            task_key = profile.key
-            trial_seed = base_seed + trial_i
-
-            if all(not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
+        for condition in conditions:
+            if not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
                 continue
 
-            pool = None
-            target = None
-            for attempt in range(max_seed_attempts_for_consensus):
-                candidate_seed = trial_seed * 1000 + attempt
-                candidate_pool = sample_candidate_pool(normalized_df, n=pool_size, seed=candidate_seed)
-                methods = {
-                    "global_fixed": lambda p: topsis(p, GLOBAL_FIXED_WEIGHTS, attribute_cols),
-                    "lookup_table": lambda p: topsis(p, TASK_LOOKUP_TABLE[profile.key], attribute_cols),
-                }
-                t = find_common_top_choice(candidate_pool, methods)
-                if t is not None:
-                    pool, target = candidate_pool, t
-                    break
-            if pool is None:
-                print(
-                    f"[drift] profile={profile.key} trial={trial_i}: no consensus "
-                    f"target found in {max_seed_attempts_for_consensus} seed attempts, skipping"
-                )
-                continue
+            if condition == "global_fixed":
+                decide_fn = lambda p: topsis(p, GLOBAL_FIXED_WEIGHTS, attribute_cols).sort_values(ascending=False).index[0]
+                reeval = static_reevaluation_period
+            elif condition == "lookup_table":
+                w = TASK_LOOKUP_TABLE[profile.key]
+                decide_fn = lambda p, w=w: topsis(p, w, attribute_cols).sort_values(ascending=False).index[0]
+                reeval = static_reevaluation_period
+            elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
+                strategy_override = "topsis" if condition == "agent_weights_only" else None
+                ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
+                decide_fn = lambda p, so=strategy_override, c=ctrl: c.decide(
+                    profile.description, p, strategy_override=so
+                ).top_service_id()
+                reeval = None
+            else:
+                raise ValueError(f"unknown condition: {condition}")
 
-            seq = simulate_drift_sequence(
-                pool,
-                attribute_cols,
-                target_service_id=target,
-                degraded_attributes=default_degraded,
-                n_rounds=n_rounds,
-                degrade_start_round=degrade_start_round,
-                profile=degradation_profile,
-                magnitude=degradation_magnitude,
-                seed=trial_seed,
+            result = adaptation_lag(
+                seq.pools, target, degrade_start_round, decide_fn, reevaluation_period=reeval
             )
 
-            for condition in conditions:
-                if not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
-                    continue
+            trace = result.active_recommendation_trace
+            n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
+            
+            row = {
+                "task_key": task_key,
+                "trial_seed": trial_seed,
+                "condition": condition,
+                "target_service_id": target,
+                "degrade_start_round": degrade_start_round,
+                "n_rounds": n_rounds,
+                "profile": degradation_profile,
+                "lag_rounds": result.lag_rounds if result.lag_rounds is not None else "",
+                "censored": result.censored,
+                "trace_json": str(trace),
+                "is_synthetic_data": is_synthetic_data,
+                "n_switches": n_switches,
+            }
+            storage.record(row)
 
-                if condition == "global_fixed":
-                    decide_fn = lambda p: topsis(p, GLOBAL_FIXED_WEIGHTS, attribute_cols).sort_values(ascending=False).index[0]
-                    reeval = static_reevaluation_period
-                elif condition == "lookup_table":
-                    w = TASK_LOOKUP_TABLE[profile.key]
-                    decide_fn = lambda p, w=w: topsis(p, w, attribute_cols).sort_values(ascending=False).index[0]
-                    reeval = static_reevaluation_period
-                elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
-                    strategy_override = "topsis" if condition == "agent_weights_only" else None
-                    ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
-                    decide_fn = lambda p, so=strategy_override, c=ctrl: c.decide(
-                        profile.description, p, strategy_override=so
-                    ).top_service_id()
-                    reeval = None
-                else:
-                    raise ValueError(f"unknown condition: {condition}")
-
-                result = adaptation_lag(
-                    seq.pools, target, degrade_start_round, decide_fn, reevaluation_period=reeval
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for profile in task_profiles:
+            default_degraded = (degraded_attributes_by_profile or {}).get(
+                profile.key, profile.dominant_attributes[:2] or profile.dominant_attributes
+            )
+            for trial_i in range(n_trials):
+                futures.append(
+                    executor.submit(_run_single_drift_trial, profile, trial_i, default_degraded)
                 )
-
-                trace = result.active_recommendation_trace
-                n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
-                
-                row = {
-                    "task_key": task_key,
-                    "trial_seed": trial_seed,
-                    "condition": condition,
-                    "target_service_id": target,
-                    "degrade_start_round": degrade_start_round,
-                    "n_rounds": n_rounds,
-                    "profile": degradation_profile,
-                    "lag_rounds": result.lag_rounds if result.lag_rounds is not None else "",
-                    "censored": result.censored,
-                    "trace_json": str(trace),
-                    "is_synthetic_data": is_synthetic_data,
-                    "n_switches": n_switches,
-                }
-                storage.record(row)
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
     return storage.load_all()
