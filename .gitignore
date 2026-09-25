@@ -14,6 +14,8 @@ dist/
 .venv/
 venv/
 env/
+uv.lock
+pyproject.toml
 
 # Pytest / Coverage
 .pytest_cache/
@@ -51,6 +53,7 @@ llm_cache.db
 # Experiment Results
 # Ignore all raw results/tables by default, but explicitly track final reports
 # -----------------------------------------------------------------------------
+results/past_results__*
 results/tables/*.csv
 results/tables/*.md
 !results/tables/.gitkeep
