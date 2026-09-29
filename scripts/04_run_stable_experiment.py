@@ -103,7 +103,7 @@ def main() -> int:
 
     config_hash = hashlib.md5(json.dumps(config, sort_keys=True).encode()).hexdigest()[:8]
     run_id = args.run_id or uuid.uuid4().hex[:8]
-    results_dir = project_root / config["paths"]["results_dir"] / run_id
+    results_dir = project_root / config["paths"]["results_dir"]
     results_dir.mkdir(parents=True, exist_ok=True)
     output_csv = results_dir / "stable_results.csv"
 

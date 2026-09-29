@@ -85,9 +85,6 @@ class OllamaBackend(LLMBackend):
                     },
                     "format": schema,
                 }
-                import json
-                print("--- HTTP REQUEST ---")
-                print(json.dumps(payload, indent=2))
                 resp = self._session.post(
                     f"{self.host}/api/chat",
                     json=payload,

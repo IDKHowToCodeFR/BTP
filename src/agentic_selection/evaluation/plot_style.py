@@ -21,6 +21,10 @@ CONDITION_LABELS = {
     "lookup_static": "Lookup baseline: static",
     "global_dynamic": "Global baseline: dynamic",
     "lookup_dynamic": "Lookup baseline: dynamic",
+    "uniform": "Uniform Weights",
+    "global_every_round": "Global Fixed",
+    "lookup_every_round": "Lookup Table",
+    "embedding_knn": "Embedding k-NN",
 }
 
 # Warm colors identify baselines; cool colors identify agent conditions.
@@ -33,6 +37,10 @@ CONDITION_COLORS = {
     "lookup_dynamic": "#F0B44D",
     "agent_weights_only": "#009E73",
     "agent_full": "#4C6FB1",
+    "uniform": "#A0AEC0",
+    "global_every_round": "#D55E5E",
+    "lookup_every_round": "#E69F00",
+    "embedding_knn": "#9F7AEA",
 }
 
 ACCENT_COLORS = ("#4C6FB1", "#009E73", "#E69F00", "#CC79A7", "#56B4E9", "#F0B44D")
@@ -55,7 +63,7 @@ def apply_publication_style() -> None:
             "axes.titleweight": "bold",
             "axes.titlelocation": "left",
             "axes.labelsize": 11,
-            "axes.labelweight": "medium",
+            "axes.labelweight": "normal",
             "xtick.color": MUTED,
             "ytick.color": INK,
             "grid.color": GRID,

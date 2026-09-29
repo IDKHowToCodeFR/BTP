@@ -28,17 +28,18 @@ echo ========================================================
 :: Since n-pools is 1, it will only do 1 pool per task. It will still take some time
 :: due to CPU inference, but you can see the very first rows being written in real-time.
 uv run python scripts\04_run_stable_experiment.py --n-pools 1 --yes
+if errorlevel 1 exit /b 1
 
 echo ========================================================
 echo Running Drift Experiment (1 pool per task)...
 echo ========================================================
 uv run python scripts\05_run_drift_experiment.py --n-trials 1 --yes
+if errorlevel 1 exit /b 1
 
 echo ========================================================
 echo Generating Reports and Figures...
 echo ========================================================
-uv run python scripts\06_generate_report.py
-uv run python scripts\08_generate_extended_analysis.py
-uv run python scripts\10_generate_presentation_figures.py
+uv run python scripts\06_generate_report_figures.py
+if errorlevel 1 exit /b 1
 
 echo Done!

@@ -70,24 +70,12 @@ results/figures/*.png
 !results/figures/.gitkeep
 
 # Core Evaluation (Report)
-!results/figures/regret_by_condition.png
-!results/figures/adaptation_lag_by_condition.png
-!results/figures/api_calls_by_condition.png
-!results/figures/latency_by_condition.png
-!results/figures/pareto_frontier.png
-!results/figures/radar_chart_weights.png
-!results/figures/drift_failover_timeline.png
-
-# Presentation Figures (QWS)
-!results/figures/project_results_overview.png
-!results/figures/qws_regret_heatmap.png
-!results/figures/qws_regret_distribution.png
-
-# Extended Analysis
-!results/figures/regret_by_task_kind.png
-!results/figures/agent_latency_by_condition.png
-!results/figures/strategy_selection_frequency.png
-!results/figures/drift_trace_example.png
+!results/figures/fig1_mean_regret_stable.png
+!results/figures/fig2_adaptation_lag_drift.png
+!results/figures/fig3_drift_recovery_timeline.png
+!results/figures/fig4_performance_vs_latency.png
+!results/figures/fig5_ablation_by_task.png
+!results/figures/fig6_strategy_by_task.png
 
 # WS-DREAM Validation (If generated)
 !results/figures/wsdream_complete_comparison.png
