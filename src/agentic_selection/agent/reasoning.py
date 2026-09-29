@@ -167,18 +167,28 @@ class DirectWeightReasoner:
             task_description, perception, attribute_cols, memory_digest, tool_menu
         )
         
-        # We pass the default schema for DirectWeightReasoner
+        # Build explicit schema for weights to constrain output
+        weight_props = {
+            c: {"type": "number", "minimum": 0.0, "maximum": 1.0}
+            for c in attribute_cols
+        }
         json_schema = {
             "type": "object",
             "properties": {
                 "weights": {
                     "type": "object",
-                    "additionalProperties": {"type": "number"}
+                    "properties": weight_props,
+                    "required": list(attribute_cols),
+                    "additionalProperties": False
                 },
-                "strategy": {"type": "string"},
+                "strategy": {
+                    "type": "string",
+                    "enum": list(tool_menu)
+                },
                 "justification": {"type": "string"}
             },
-            "required": ["weights", "strategy", "justification"]
+            "required": ["weights", "strategy", "justification"],
+            "additionalProperties": False
         }
         raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)
         parsed = parse_llm_json(raw_text)
@@ -247,10 +257,14 @@ class ClassificationReasoner:
             "type": "object",
             "properties": {
                 "category": {"type": "string"},
-                "strategy": {"type": "string"},
+                "strategy": {
+                    "type": "string",
+                    "enum": list(tool_menu)
+                },
                 "justification": {"type": "string"}
             },
-            "required": ["category", "strategy", "justification"]
+            "required": ["category", "strategy", "justification"],
+            "additionalProperties": False
         }
 
         raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)

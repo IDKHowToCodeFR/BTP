@@ -22,6 +22,7 @@ class PoolPerception:
     conflict_score: float
     outlier_fraction: float
     missing_fraction: float
+    bounds: Dict[str, Tuple[float, float]]
     prompt_text_override: str | None = None
 
     def to_vector(self) -> np.ndarray:
@@ -49,6 +50,14 @@ class PoolPerception:
         if self.prompt_text_override is not None:
             return self.prompt_text_override
             
+        lines = [f"Candidate pool size: {self.n_candidates}", "Attribute bounds:"]
+        for c in self.attribute_cols:
+            if c in self.bounds:
+                c_min, c_max = self.bounds[c]
+                lines.append(f"  - {c}: [{c_min:.3f}, {c_max:.3f}]")
+            else:
+                lines.append(f"  - {c}: all missing")
+                
         var_str = ", ".join(f"{c}={v:.3f}" for c, v in self.variance.items())
         top_conflicts = sorted(
             self.pairwise_correlation.items(), key=lambda kv: kv[1]
@@ -58,17 +67,10 @@ class PoolPerception:
             if top_conflicts
             else "none observed"
         )
-        return (
-            f"Candidate pool size: {self.n_candidates}\n"
-            f"Per-attribute variance (0-1 scale): {var_str}\n"
-            f"Most negatively-correlated attribute pairs (potential "
-            f"trade-offs): {conflict_str}\n"
-            f"Overall conflict score: {self.conflict_score:.3f} "
-            f"(higher = more genuine trade-offs between attributes)\n"
-            f"Outlier fraction (rows with >=1 attribute outside 1.5xIQR): "
-            f"{self.outlier_fraction:.3f}\n"
-            f"Missing-value fraction: {self.missing_fraction:.3f}"
-        )
+        
+        lines.append(f"Per-attribute variance (0-1 scale): {var_str}")
+        lines.append(f"Most negatively-correlated attribute pairs (potential trade-offs): {conflict_str}")
+        return "\n".join(lines)
 
 
 def _outlier_row_fraction(df: pd.DataFrame, attribute_cols: Sequence[str]) -> float:
@@ -149,6 +151,11 @@ def summarize_pool(
     ref = missing_df.loc[:, attribute_cols] if missing_df is not None else sub
     missing_fraction = float(ref.isnull().mean().mean()) if len(ref) else 0.0
 
+    bounds: Dict[str, Tuple[float, float]] = {}
+    for c in attribute_cols:
+        if sub[c].notna().any():
+            bounds[c] = (float(sub[c].min()), float(sub[c].max()))
+
     p = PoolPerception(
         n_candidates=len(df),
         attribute_cols=attribute_cols,
@@ -157,19 +164,10 @@ def summarize_pool(
         conflict_score=conflict_score,
         outlier_fraction=outlier_fraction,
         missing_fraction=missing_fraction,
+        bounds=bounds,
     )
 
     if len(df) == 0:
         p.prompt_text_override = "Candidate pool size: 0"
-        return p
-        
-    lines = [f"Candidate pool size: {len(df)}", "Attribute bounds:"]
-    for c in attribute_cols:
-        if sub[c].notna().any():
-            c_min, c_max = float(sub[c].min()), float(sub[c].max())
-            lines.append(f"  - {c}: [{c_min:.3f}, {c_max:.3f}]")
-        else:
-            lines.append(f"  - {c}: all missing")
-            
-    p.prompt_text_override = "\n".join(lines)
+
     return p

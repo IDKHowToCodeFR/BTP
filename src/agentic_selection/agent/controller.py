@@ -130,6 +130,7 @@ class AgentController:
         candidate_pool: CandidatePool,
         strategy_override: Optional[str] = None,
         use_memory: bool = True,
+        profile_key_hint: Optional[str] = None,
     ) -> AgentDecision:
         """Run one full perceive-reason-act-remember cycle.
 
@@ -190,7 +191,7 @@ class AgentController:
         latency = time.time() - t0
 
         validated: ValidationResult = validate_agent_output(
-            parsed, task_description, self.attribute_cols, self.tool_menu
+            parsed, task_description, self.attribute_cols, self.tool_menu, profile_key_hint=profile_key_hint
         )
 
         effective_strategy = strategy_override or validated.strategy

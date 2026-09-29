@@ -74,8 +74,10 @@ def _fallback(
     reason: str,
     attribute_cols: Sequence[str],
     fallback_strategy: str = DEFAULT_FALLBACK_STRATEGY,
+    profile_key_hint: Optional[str] = None,
 ) -> ValidationResult:
-    weights = get_lookup_weights(task_description, fallback="nearest")
+    lookup_query = profile_key_hint if profile_key_hint else task_description
+    weights = get_lookup_weights(lookup_query, fallback="nearest")
     # Restrict/reorder to exactly attribute_cols in case the lookup table
     # was built for a different (e.g. larger) attribute schema than the
     # current candidate pool actually has.
@@ -100,6 +102,7 @@ def validate_agent_output(
     attribute_cols: Sequence[str],
     tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
     degenerate_threshold: Optional[float] = None,
+    profile_key_hint: Optional[str] = None,
 ) -> ValidationResult:
     """Validate (and, where possible, repair) a parsed LLM response.
 
@@ -112,7 +115,7 @@ def validate_agent_output(
     (see that function's docstring for why a fixed constant is wrong).
     """
     if parsed is None:
-        return _fallback(task_description, "LLM response was not parseable JSON", attribute_cols)
+        return _fallback(task_description, "LLM response was not parseable JSON", attribute_cols, profile_key_hint=profile_key_hint)
 
     strategy = parsed.get("strategy")
     if not isinstance(strategy, str) or strategy not in tool_menu:
@@ -120,11 +123,12 @@ def validate_agent_output(
             task_description,
             f"strategy field missing or not in allowed menu {tuple(tool_menu)}: {strategy!r}",
             attribute_cols,
+            profile_key_hint=profile_key_hint,
         )
 
     weights = parsed.get("weights")
     if not isinstance(weights, dict) or len(weights) == 0:
-        return _fallback(task_description, "weights field missing or not a non-empty object", attribute_cols)
+        return _fallback(task_description, "weights field missing or not a non-empty object", attribute_cols, profile_key_hint=profile_key_hint)
 
     known = set(attribute_cols)
     unknown_keys = set(weights.keys()) - known
@@ -133,15 +137,16 @@ def validate_agent_output(
             task_description,
             f"weights referenced unknown attribute(s) not in the pool's schema: {sorted(unknown_keys)}",
             attribute_cols,
+            profile_key_hint=profile_key_hint,
         )
 
     try:
         numeric_weights = {k: float(v) for k, v in weights.items()}
     except (TypeError, ValueError):
-        return _fallback(task_description, "weights contained a non-numeric value", attribute_cols)
+        return _fallback(task_description, "weights contained a non-numeric value", attribute_cols, profile_key_hint=profile_key_hint)
 
     if any(v < 0 for v in numeric_weights.values()):
-        return _fallback(task_description, "weights contained a negative value", attribute_cols)
+        return _fallback(task_description, "weights contained a negative value", attribute_cols, profile_key_hint=profile_key_hint)
 
     # Fill any attribute the model omitted with 0 -- an omission is not
     # itself a hard failure (a sparse-but-valid weighting is plausible),
@@ -149,7 +154,7 @@ def validate_agent_output(
     full_weights = {c: numeric_weights.get(c, 0.0) for c in attribute_cols}
     total = sum(full_weights.values())
     if total <= 1e-9:
-        return _fallback(task_description, "weights summed to (numerically) zero", attribute_cols)
+        return _fallback(task_description, "weights summed to (numerically) zero", attribute_cols, profile_key_hint=profile_key_hint)
 
     normalized = {c: v / total for c, v in full_weights.items()}
 
@@ -161,6 +166,7 @@ def validate_agent_output(
             f"degenerate weights: '{max_attr}' alone holds {max_weight:.2f} "
             f"of total mass (> {threshold} threshold for {len(attribute_cols)} attributes)",
             attribute_cols,
+            profile_key_hint=profile_key_hint,
         )
 
     justification = parsed.get("justification")

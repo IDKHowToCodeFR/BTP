@@ -125,11 +125,17 @@ class OllamaBackend(LLMBackend):
         host: str = "http://localhost:11434",
         temperature: float = 0.0,
         timeout: int = 300,
+        seed: Optional[int] = None,
+        num_ctx: Optional[int] = None,
+        num_predict: Optional[int] = None,
     ):
         self.model = model
         self.host = host.rstrip("/")
         self.temperature = temperature
         self.timeout = timeout
+        self.seed = seed
+        self.num_ctx = num_ctx
+        self.num_predict = num_predict
         self._session = requests.Session()
 
     def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
@@ -158,7 +164,12 @@ class OllamaBackend(LLMBackend):
                             {"role": "user", "content": user_prompt},
                         ],
                         "stream": False,
-                        "options": {"temperature": self.temperature},
+                        "options": {
+                            "temperature": self.temperature,
+                            **({"seed": self.seed} if self.seed is not None else {}),
+                            **({"num_ctx": self.num_ctx} if self.num_ctx is not None else {}),
+                            **({"num_predict": self.num_predict} if self.num_predict is not None else {}),
+                        },
                         "format": schema,
                     },
                     timeout=self.timeout,
@@ -261,6 +272,9 @@ def build_backend_from_config(config: dict) -> LLMBackend:
             model=config.get("model", "llama3.1:8b"),
             host=config.get("host", "http://localhost:11434"),
             temperature=config.get("temperature", 0.0),
+            seed=config.get("seed"),
+            num_ctx=config.get("num_ctx"),
+            num_predict=config.get("num_predict"),
         )
     if provider == "mock":
         return MockBackend(fixed_response=config.get("fixed_response", "{}"))
