@@ -43,7 +43,8 @@ from agentic_selection.data.wsdream_loader import (
 from agentic_selection.evaluation.protocol import run_stable_protocol, STABLE_RESULT_FIELDS
 from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks.wsdream_profiles import WSDREAM_TASK_PROFILES
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 
 
 def positive_int(value: str) -> int:
@@ -72,7 +73,7 @@ def main() -> int:
 
     setup_logging()
     project_root = Path(__file__).resolve().parents[1]
-    config = load_config(project_root / args.config)
+    config = yaml.safe_load(open(project_root / args.config, encoding="utf-8"))
     data_dir = project_root / config["paths"]["data_dir"]
 
     wsdream_dir = data_dir / "raw" / "wsdream1"

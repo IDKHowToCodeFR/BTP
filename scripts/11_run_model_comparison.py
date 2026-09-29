@@ -22,12 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 import pandas as pd
 
-from agentic_selection.agent import AgentController, OllamaBackend, DirectWeightReasoner, ClassificationReasoner
+from agentic_selection.agent import AgentController, OllamaBackend, DirectWeightReasoner, ClassificationReasoner, VotingClassificationReasoner
 from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
 from agentic_selection.evaluation.protocol import run_stable_protocol, STABLE_RESULT_FIELDS
 from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 from agentic_selection.evaluation.metrics import bootstrap_ci
 
 
@@ -136,7 +137,7 @@ def main() -> int:
 
     setup_logging()
     project_root = Path(__file__).resolve().parents[1]
-    config = load_config(project_root / args.config)
+    config = yaml.safe_load(open(project_root / args.config, encoding="utf-8"))
 
     data_dir = project_root / config["paths"]["data_dir"]
     norm_path = data_dir / "processed" / "qws_normalized.csv"
@@ -153,8 +154,10 @@ def main() -> int:
     all_reasoners_map = {
         "DirectWeight": DirectWeightReasoner,
         "Classification": ClassificationReasoner,
+        "VotingClassification": VotingClassificationReasoner,
         "direct": DirectWeightReasoner,
         "classification": ClassificationReasoner,
+        "voting": VotingClassificationReasoner,
     }
     
     reasoners_list = [r.strip() for r in args.reasoners.split(",")]
@@ -204,7 +207,24 @@ def main() -> int:
     
     uniform_regrets = uniform_results[uniform_results["condition"] == "uniform"]["regret"]
     uniform_ci = bootstrap_ci(uniform_regrets, uniform_results[uniform_results["condition"] == "uniform"]["pool_seed"])
-    print(f"Uniform Baseline Regret: {uniform_ci.mean:.4f} [{uniform_ci.lower:.4f}, {uniform_ci.upper:.4f}]")
+    print(f"Uniform Baseline Regret: {uniform_ci.mean:.3f} [{uniform_ci.lower:.3f}, {uniform_ci.upper:.3f}]")
+    
+    print("\nRunning embedding_knn Baseline...")
+    embedding_knn_results = run_stable_protocol(
+        norm_df, QWS_ATTRIBUTE_COLUMNS, storage, dummy_controller,
+        run_id=run_id, config_hash=config_hash, git_sha=git_sha,
+        model="baseline", n_pools=args.n_pools, pool_size=args.pool_size, base_seed=base_seed,
+        is_synthetic_data=is_synthetic, conditions=("embedding_knn",)
+    )
+    
+    print("\nRunning soft_knn Baseline...")
+    soft_knn_results = run_stable_protocol(
+        norm_df, QWS_ATTRIBUTE_COLUMNS, storage, dummy_controller,
+        run_id=run_id, config_hash=config_hash, git_sha=git_sha,
+        model="baseline", n_pools=args.n_pools, pool_size=args.pool_size, base_seed=base_seed,
+        is_synthetic_data=is_synthetic, conditions=("soft_knn",)
+    )
+
     
     total_est_calls = len(models_list) * len(reasoners) * 14 * args.n_pools
     est_hours = total_est_calls * 25.0 / 3600.0
@@ -225,7 +245,7 @@ def main() -> int:
             if memory_path.exists():
                 memory_path.unlink()
                 
-            backend = OllamaBackend(model, seed=42, temperature=0.0, num_predict=60, num_ctx=2048)
+            backend = OllamaBackend(model, seed=42, temperature=0.0, num_predict=300, num_ctx=2048)
             controller = AgentController(
                 backend=backend,
                 attribute_cols=QWS_ATTRIBUTE_COLUMNS,
@@ -258,6 +278,28 @@ def main() -> int:
         print_comparison_report(combined_model_df, model, uniform_results[uniform_results["condition"] == "uniform"])
 
     end_time = time.time()
+    
+    print("\n=======================================================")
+    print(" Baselines Comparison")
+    print("=======================================================")
+    all_baselines = pd.concat([uniform_results, embedding_knn_results, soft_knn_results])
+    for condition in ["embedding_knn", "soft_knn", "uniform"]:
+        cond_df = all_baselines[all_baselines["condition"] == condition]
+        if len(cond_df) > 0:
+            regret = cond_df["regret"].mean()
+            l1 = cond_df["weight_l1"].mean()
+            ndcg = cond_df["ndcg_at_5"].mean()
+            tau = cond_df["kendall_tau"].mean()
+            
+            regret_ci = bootstrap_ci(cond_df["regret"].values, cond_df["pool_seed"])
+            ci_str = f"[{regret_ci.lower:.4f}, {regret_ci.upper:.4f}]" if regret_ci else ""
+            
+            print(f"\n--- {condition} ---")
+            print(f"  Regret:        {regret:.4f} {ci_str}")
+            print(f"  Weight L1:     {l1:.4f}")
+            print(f"  NDCG@5:        {ndcg:.4f}")
+            print(f"  Kendall Tau:   {tau:.4f}")
+            
     print(f"\nAll results saved to {output_csv}")
     print(f"Total Actual LLM Calls: {total_actual_calls}")
     print(f"Total Cache Hits: {total_cache_hits}")

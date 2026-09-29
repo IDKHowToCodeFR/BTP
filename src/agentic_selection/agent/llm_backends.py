@@ -27,91 +27,6 @@ class LLMBackend(abc.ABC):
         return type(self).__name__
 
 
-class AnthropicBackend(LLMBackend):
-    def __init__(
-        self,
-        model: str = "claude-haiku-4-5-20251001",
-        api_key: Optional[str] = None,
-        max_tokens: int = 1000,
-        temperature: float = 0.0,
-    ):
-        try:
-            import anthropic
-        except ImportError as e:
-            raise ImportError(
-                "AnthropicBackend requires the 'anthropic' package: "
-                "pip install anthropic"
-            ) from e
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise ValueError(
-                "No Anthropic API key found. Pass api_key=... or set the "
-                "ANTHROPIC_API_KEY environment variable."
-            )
-        self._client = anthropic.Anthropic(api_key=key)
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-
-    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
-        resp = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
-        usage = {
-            "prompt_tokens": resp.usage.input_tokens if hasattr(resp, "usage") else 0,
-            "completion_tokens": resp.usage.output_tokens if hasattr(resp, "usage") else 0,
-        }
-        return text, usage
-
-
-class OpenAIBackend(LLMBackend):
-    def __init__(
-        self,
-        model: str = "gpt-4o-mini",
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        max_tokens: int = 1000,
-        temperature: float = 0.0,
-    ):
-        try:
-            import openai
-        except ImportError as e:
-            raise ImportError(
-                "OpenAIBackend requires the 'openai' package: pip install openai"
-            ) from e
-        key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise ValueError(
-                "No OpenAI API key found. Pass api_key=... or set the "
-                "OPENAI_API_KEY environment variable."
-            )
-        self._client = openai.OpenAI(api_key=key, base_url=base_url)
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-
-    def complete(self, system_prompt: str, user_prompt: str, json_schema: dict | None = None) -> Tuple[str, dict]:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        text = resp.choices[0].message.content or ""
-        usage = {
-            "prompt_tokens": resp.usage.prompt_tokens if hasattr(resp, "usage") and resp.usage else 0,
-            "completion_tokens": resp.usage.completion_tokens if hasattr(resp, "usage") and resp.usage else 0,
-        }
-        return text, usage
-
 
 class OllamaBackend(LLMBackend):
     """Zero-API-cost local backend, e.g. `ollama pull llama3.1:8b` then
@@ -155,23 +70,27 @@ class OllamaBackend(LLMBackend):
         max_retries = 5
         for attempt in range(max_retries):
             try:
+                payload = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": self.temperature,
+                        **({"seed": self.seed} if self.seed is not None else {}),
+                        **({"num_ctx": self.num_ctx} if self.num_ctx is not None else {}),
+                        **({"num_predict": self.num_predict} if self.num_predict is not None else {}),
+                    },
+                    "format": schema,
+                }
+                import json
+                print("--- HTTP REQUEST ---")
+                print(json.dumps(payload, indent=2))
                 resp = self._session.post(
                     f"{self.host}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "stream": False,
-                        "options": {
-                            "temperature": self.temperature,
-                            **({"seed": self.seed} if self.seed is not None else {}),
-                            **({"num_ctx": self.num_ctx} if self.num_ctx is not None else {}),
-                            **({"num_predict": self.num_predict} if self.num_predict is not None else {}),
-                        },
-                        "format": schema,
-                    },
+                    json=payload,
                     timeout=self.timeout,
                 )
                 resp.raise_for_status()
@@ -255,21 +174,6 @@ def build_backend_from_config(config: dict) -> LLMBackend:
     Python callables/lists that don't serialize to YAML.
     """
     provider = config.get("provider", "mock").lower()
-    if provider == "anthropic":
-        return AnthropicBackend(
-            model=config.get("model", "claude-haiku-4-5-20251001"),
-            api_key=config.get("api_key"),
-            max_tokens=config.get("max_tokens", 1000),
-            temperature=config.get("temperature", 0.0),
-        )
-    if provider == "openai":
-        return OpenAIBackend(
-            model=config.get("model", "gpt-4o-mini"),
-            api_key=config.get("api_key"),
-            base_url=config.get("base_url"),
-            max_tokens=config.get("max_tokens", 1000),
-            temperature=config.get("temperature", 0.0),
-        )
     if provider == "ollama":
         return OllamaBackend(
             model=config.get("model", "llama3.1:8b"),

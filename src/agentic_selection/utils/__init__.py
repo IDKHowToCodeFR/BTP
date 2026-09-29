@@ -11,5 +11,5 @@ __all__ = [
     "STABLE_PROTOCOL_BASE_SEED",
     "DRIFT_PROTOCOL_BASE_SEED",
     "SYNTHETIC_DATA_SEED",
-    "load_config",
+    "setup_logging",
 ]

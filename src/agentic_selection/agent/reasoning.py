@@ -128,6 +128,17 @@ def parse_llm_json(raw_text: str) -> dict:
         if not isinstance(parsed, dict):
             last_error = ValueError(f"parsed JSON is not an object: {type(parsed)}")
             continue
+        
+        # Lenient repair: if flat weights are returned at root, wrap them in the expected envelope.
+        # Check if the keys are primarily QoS attributes (like response_time, latency)
+        qos_keywords = {"response_time", "availability", "throughput", "successability", "reliability", "compliance", "best_practices", "latency", "documentation"}
+        if "weights" not in parsed and any(k in qos_keywords for k in parsed.keys()):
+            parsed = {
+                "weights": parsed,
+                "strategy": "topsis",  # fallback default strategy if missing
+                "justification": "auto-repaired flat JSON"
+            }
+        
         return parsed
 
     raise LLMOutputParseError(
@@ -227,6 +238,15 @@ class ClassificationReasoner:
     """An SLM-optimized reasoning strategy that asks the LLM to classify the
     task into a known profile, then maps that profile to optimal weights.
     """
+    def __init__(self, categories_shuffle_seed=None):
+        self.categories_shuffle_seed = categories_shuffle_seed
+
+    @property
+    def id(self) -> str:
+        if self.categories_shuffle_seed is not None:
+            return f"ClassificationReasoner_seed{self.categories_shuffle_seed}"
+        return "ClassificationReasoner"
+
     def get_schema(self, attribute_cols: Sequence[str], tool_menu: Sequence[str]) -> dict:
         return {
             "type": "object",
@@ -253,7 +273,18 @@ class ClassificationReasoner:
         memory_digest: str = "",
         tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
     ) -> Tuple[dict, str, dict]:
-        categories = "\n".join(f"- {k}" for k in TASK_LOOKUP_TABLE.keys())
+        from agentic_selection.tasks.profiles import TASK_PROFILES
+        
+        cats = []
+        for p in TASK_PROFILES:
+            cats.append(f'- "{p.key}": Random nonsense text blablabla.')
+
+        if self.categories_shuffle_seed is not None:
+            import random
+            rng = random.Random(self.categories_shuffle_seed)
+            rng.shuffle(cats)
+
+        categories = "\n".join(cats)
         system_prompt = CLASSIFICATION_SYSTEM_PROMPT.format(categories=categories)
         if set(tool_menu) != set(DEFAULT_TOOL_MENU):
             lines = "\n".join(f'- "{t}"' for t in tool_menu)
@@ -304,3 +335,47 @@ class ClassificationReasoner:
             "category": category,
         }
         return final_dict, raw_text, usage_dict
+
+class VotingClassificationReasoner:
+    """Invokes ClassificationReasoner 3 times with different option orders and takes a majority vote."""
+    def __init__(self, n_votes: int = 3):
+        self.n_votes = n_votes
+
+    @property
+    def id(self) -> str:
+        return f"VotingClassificationReasoner_n{self.n_votes}"
+
+    def get_schema(self, attribute_cols: Sequence[str], tool_menu: Sequence[str]) -> dict:
+        return ClassificationReasoner().get_schema(attribute_cols, tool_menu)
+
+    def decide(
+        self,
+        backend: LLMBackend,
+        task_description: str,
+        perception: PoolPerception,
+        attribute_cols: Sequence[str],
+        memory_digest: str = "",
+        tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
+    ) -> Tuple[dict, str, dict]:
+        from collections import Counter
+        
+        votes = []
+        raw_texts = []
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_duration": 0}
+
+        for i in range(self.n_votes):
+            # Pass a different seed so order changes each time
+            r = ClassificationReasoner(categories_shuffle_seed=i)
+            parsed, raw, usage = r.decide(backend, task_description, perception, attribute_cols, memory_digest, tool_menu)
+            votes.append(parsed)
+            raw_texts.append(raw)
+            for k in total_usage:
+                total_usage[k] += usage.get(k, 0)
+                
+        cats = [v.get("category") for v in votes if v and "category" in v]
+        if not cats:
+            raise LLMOutputParseError("All 3 classification votes failed to parse", "\n---\n".join(raw_texts))
+            
+        best_cat = Counter(cats).most_common(1)[0][0]
+        best_vote = next((v for v in votes if v.get("category") == best_cat), votes[0])
+        return best_vote, "\n---\n".join(raw_texts), total_usage

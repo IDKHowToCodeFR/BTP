@@ -113,15 +113,18 @@ TASK_PROFILE_BY_KEY = {p.key: p for p in TASK_PROFILES}
 @dataclass(frozen=True)
 class HeldOutTask:
     description: str
-    nearest_profile_key: str
+    reference_weights: Dict[str, float]
     note: str
 
+    def __post_init__(self):
+        # Ensure weights sum to 1.0
+        total = sum(self.reference_weights.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"Weights sum to {total}, expected 1.0")
 
-# Held-out set for H3 (generalization to unseen phrasing). `nearest_profile_key`
-# records which canonical profile a human would say this is *closest* to, so
-# the evaluation harness can still compute regret against a reference weight
-# vector -- but the description text itself is deliberately not what the
-# lookup table's fuzzy matcher was tuned against.
+
+# Held-out set for H3 (generalization to unseen phrasing) with human-authored blended reference weights.
+# Authored by: Antigravity (AI)
 HELD_OUT_TASKS: List[HeldOutTask] = [
     HeldOutTask(
         description=(
@@ -129,8 +132,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "feed -- fans should see a goal within a second or two of it "
             "happening, or the notification is basically worthless."
         ),
-        nearest_profile_key="streaming",
-        note="Paraphrase of the streaming/low-latency concern in a different domain.",
+        reference_weights={"response_time": 0.30, "latency": 0.30, "throughput": 0.20, "reliability": 0.10, "availability": 0.10},
+        note="Streaming/low-latency blend.",
     ),
     HeldOutTask(
         description=(
@@ -138,8 +141,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "If a payment silently fails or the service is down on payday, "
             "that's a serious problem for a lot of people at once."
         ),
-        nearest_profile_key="financial_transaction",
-        note="Domain-shifted paraphrase of the financial-transaction profile.",
+        reference_weights={"reliability": 0.40, "availability": 0.30, "successability": 0.20, "compliance": 0.10},
+        note="Financial transaction blend.",
     ),
     HeldOutTask(
         description=(
@@ -147,8 +150,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "third-party enrichment API once a week, several million SKUs "
             "in one run, kicked off by a cron job with nobody watching it."
         ),
-        nearest_profile_key="batch_processing",
-        note="Paraphrase of batch processing with different domain vocabulary.",
+        reference_weights={"throughput": 0.40, "successability": 0.40, "reliability": 0.20},
+        note="Batch processing blend.",
     ),
     HeldOutTask(
         description=(
@@ -157,8 +160,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "none of us has time to read a spec to figure out the request "
             "format."
         ),
-        nearest_profile_key="low_cost_prototype",
-        note="Paraphrase of the low-cost/hobby profile.",
+        reference_weights={"documentation": 0.40, "best_practices": 0.40, "response_time": 0.20},
+        note="Low-cost prototype blend.",
     ),
     HeldOutTask(
         description=(
@@ -167,8 +170,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "occasionally is fine, but the request needs to return before "
             "the next reading is already due."
         ),
-        nearest_profile_key="iot_telemetry_ingestion",
-        note="Paraphrase of IoT ingestion using a different device type.",
+        reference_weights={"response_time": 0.40, "latency": 0.20, "throughput": 0.20, "successability": 0.20},
+        note="IoT telemetry ingestion blend.",
     ),
     HeldOutTask(
         description=(
@@ -176,8 +179,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "next quarter and need every vendor in the stack to have a "
             "clean conformance story on paper, or we risk failing the audit."
         ),
-        nearest_profile_key="compliance_sensitive_backend",
-        note="Paraphrase of compliance-sensitive profile with audit framing.",
+        reference_weights={"compliance": 0.50, "best_practices": 0.30, "documentation": 0.20},
+        note="Compliance-sensitive blend.",
     ),
     HeldOutTask(
         description=(
@@ -185,13 +188,8 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "AND extremely fast, because it's a real-time fraud check that "
             "runs synchronously before a financial transaction is approved."
         ),
-        nearest_profile_key="financial_transaction",
-        note=(
-            "Deliberate blend of two profiles' concerns (reliability + "
-            "speed) not matching any single profile cleanly -- tests "
-            "whether the agent can weight a genuine trade-off rather than "
-            "pattern-matching to one canonical profile."
-        ),
+        reference_weights={"reliability": 0.35, "response_time": 0.35, "latency": 0.20, "availability": 0.10},
+        note="Blend of reliability + speed.",
     ),
     HeldOutTask(
         description=(
@@ -199,9 +197,25 @@ HELD_OUT_TASKS: List[HeldOutTask] = [
             "in front of a few judges; it only has to survive a 10-minute "
             "demo, nothing about it needs to be production-grade."
         ),
-        nearest_profile_key="low_cost_prototype",
-        note="Novel scenario with no close analogue among the six profiles.",
+        reference_weights={"response_time": 0.50, "documentation": 0.30, "best_practices": 0.20},
+        note="Hackathon demo blend.",
     ),
+    HeldOutTask(
+        description=(
+            "A medical records synchronization service between hospitals. "
+            "It must never lose a record and must strictly adhere to HIPAA regulations."
+        ),
+        reference_weights={"reliability": 0.40, "compliance": 0.40, "successability": 0.20},
+        note="Blend of medical reliability and compliance.",
+    ),
+    HeldOutTask(
+        description=(
+            "A globally distributed multiplayer game server backend. "
+            "It requires high throughput for massive player actions and ultra-low latency."
+        ),
+        reference_weights={"throughput": 0.40, "latency": 0.40, "response_time": 0.20},
+        note="Blend of gaming throughput and latency.",
+    )
 ]
 
 

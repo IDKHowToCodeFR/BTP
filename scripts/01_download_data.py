@@ -17,7 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agentic_selection.data.download import ensure_qws, ensure_wsdream_dataset1
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 
 
 def main() -> int:
@@ -28,7 +29,7 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_logging()
-    config = load_config(args.config)
+    config = yaml.safe_load(open(args.config, encoding="utf-8"))
     data_dir = Path(config["paths"]["data_dir"])
 
     print(f"== Downloading QWS Dataset v2.0 into {data_dir}/raw/qws ==")

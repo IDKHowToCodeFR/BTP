@@ -9,7 +9,7 @@ Orchestrates the Perceive -> Reason -> Act -> Remember loop for the agent.
 # --- Imports ---
 from __future__ import annotations
 import time
-import sqlite3
+import shelve
 import json
 import threading
 from pathlib import Path
@@ -71,35 +71,16 @@ class AgentDecision:
 class SQLiteCache:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-
-        # A threading lock is required here to ensure multiple worker 
-        # threads don't corrupt the DB during concurrent cache writes.
+        self.path = str(path)
         self._lock = threading.Lock()
-        conn = sqlite3.connect(self.path)
-        try:
-            conn.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, val TEXT)")
-        finally:
-            conn.close()
-            
+
     def get(self, key: str) -> Optional[dict]:
-        with self._lock:
-            conn = sqlite3.connect(self.path)
-            try:
-                cur = conn.execute("SELECT val FROM cache WHERE key = ?", (key,))
-                row = cur.fetchone()
-                return json.loads(row[0]) if row else None
-            finally:
-                conn.close()
-                
+        with self._lock, shelve.open(self.path) as db:
+            return db.get(key)
+
     def set(self, key: str, val: dict) -> None:
-        with self._lock:
-            conn = sqlite3.connect(self.path)
-            try:
-                conn.execute("INSERT OR REPLACE INTO cache VALUES (?, ?)", (key, json.dumps(val)))
-                conn.commit()
-            finally:
-                conn.close()
+        with self._lock, shelve.open(self.path) as db:
+            db[key] = val
 
 
 class AgentController:
@@ -131,7 +112,6 @@ class AgentController:
         candidate_pool: CandidatePool,
         strategy_override: Optional[str] = None,
         use_memory: bool = True,
-        profile_key_hint: Optional[str] = None,
     ) -> AgentDecision:
         """Run one full perceive-reason-act-remember cycle.
 
@@ -167,7 +147,8 @@ class AgentController:
         reasoner_name = type(self.reasoning_strategy).__name__
         from agentic_selection.agent.reasoning import PROMPT_VERSION
         schema_hash = hash(json.dumps(self.reasoning_strategy.get_schema(self.attribute_cols, self.tool_menu), sort_keys=True))
-        cache_key = json.dumps((self.backend.name, model_name, reasoner_name, PROMPT_VERSION, schema_hash, task_description, perception.to_prompt_text(), digest))
+        reasoner_id = getattr(self.reasoning_strategy, "id", self.reasoning_strategy.__class__.__name__)
+        cache_key = json.dumps((self.backend.name, model_name, reasoner_id, PROMPT_VERSION, schema_hash, task_description, perception.to_prompt_text(), digest))
         
         cached_result = self._llm_cache.get(cache_key)
         if cached_result is not None:
@@ -193,7 +174,7 @@ class AgentController:
         latency = time.time() - t0
 
         validated: ValidationResult = validate_agent_output(
-            parsed, task_description, self.attribute_cols, self.tool_menu, profile_key_hint=profile_key_hint
+            parsed, task_description, self.attribute_cols, self.tool_menu
         )
 
         effective_strategy = strategy_override or validated.strategy

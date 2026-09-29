@@ -30,8 +30,8 @@ from agentic_selection.baselines.lookup_table import get_lookup_weights
 from agentic_selection.data.preprocessing import CandidatePool, sample_candidate_pool
 from agentic_selection.drift.simulate import find_common_top_choice, simulate_drift_sequence
 from agentic_selection.evaluation.metrics import adaptation_lag, regret
-from agentic_selection.evaluation.runner import ExperimentRunner
-from agentic_selection.evaluation.storage import ExperimentStorage
+import concurrent.futures
+from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
 STABLE_CONDITIONS = ("uniform", "global_every_round", "lookup_every_round", "embedding_knn", "agent_weights_only", "agent_full")
@@ -70,7 +70,7 @@ STABLE_RESULT_FIELDS = [
 def run_stable_protocol(
     normalized_df: pd.DataFrame,
     attribute_cols: Sequence[str],
-    storage: ExperimentStorage,
+    storage: CsvStorage,
     agent_controller: AgentController,
     run_id: str = "default",
     config_hash: str = "unknown",
@@ -117,7 +117,15 @@ def run_stable_protocol(
 
     reference_weights_by_key: Dict[str, dict] = {p.key: lookup_table[p.key] for p in task_profiles}
     for i, t in enumerate(held_out_tasks):
-        reference_weights_by_key[f"held_out_{i}"] = lookup_table[t.nearest_profile_key]
+        if hasattr(t, "reference_weights"):
+            w = {c: getattr(t, "reference_weights").get(c, 0.0) for c in attribute_cols}
+            # normalize if needed
+            total = sum(w.values())
+            if total > 0:
+                w = {c: v / total for c, v in w.items()}
+            reference_weights_by_key[f"held_out_{i}"] = w
+        else:
+            reference_weights_by_key[f"held_out_{i}"] = lookup_table[getattr(t, "nearest_profile_key")]
 
     def _run_single_condition(task_key, task_kind, task_description, seed, condition, ref_weights):
         if not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "pool_seed": seed, "condition": condition}):
@@ -144,7 +152,7 @@ def run_stable_protocol(
             w_json = json.dumps(w)
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition in ("lookup_every_round", "lookup_table"):
-            w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
+            w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key, fallback="nearest")
             scores = topsis(pool, w)
             fallback, latency, api_calls = False, 0.0, 0
             top_id = scores.sort_values(ascending=False).index[0]
@@ -163,10 +171,20 @@ def run_stable_protocol(
             category_val = None
             w_json = json.dumps(w)
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
+        elif condition == "soft_knn":
+            w = get_lookup_weights(task_description, fallback="soft_knn")
+            w = {c: w.get(c, 0.0) for c in attribute_cols}
+            scores = topsis(pool, w)
+            fallback, latency, api_calls = False, 0.0, 0
+            top_id = scores.sort_values(ascending=False).index[0]
+            strategy = "topsis"
+            category_val = None
+            w_json = json.dumps(w)
+            prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition in ("agent_weights_only", "agent_full"):
             strategy_override = "topsis" if condition == "agent_weights_only" else None
             decision = agent_controller.decide(
-                task_description, pool, strategy_override=strategy_override, use_memory=False, profile_key_hint=task_key
+                task_description, pool, strategy_override=strategy_override, use_memory=False
             )
             scores = decision.ranking
             fallback = decision.fallback_triggered
@@ -188,7 +206,7 @@ def run_stable_protocol(
         )
         
         # Calculate metric values
-        if condition in ("global_every_round", "global_fixed", "lookup_every_round", "lookup_table", "uniform", "embedding_knn"):
+        if condition in ("global_every_round", "global_fixed", "lookup_every_round", "lookup_table", "uniform", "embedding_knn", "soft_knn"):
             pred_weights = json.loads(w_json)
         else:
             pred_weights = decision.weights
@@ -250,7 +268,9 @@ def run_stable_protocol(
                     lambda tk=task_key, tkind=task_kind, td=task_description, s=seed, c=condition, rw=ref_weights: _run_single_condition(tk, tkind, td, s, c, rw)
                 )
 
-    ExperimentRunner(max_workers=max_workers).execute(trials)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for future in concurrent.futures.as_completed([executor.submit(t) for t in trials]):
+            future.result()
     return storage.load_all()
 
 
@@ -279,7 +299,7 @@ DRIFT_RESULT_FIELDS = [
 def run_drift_protocol(
     normalized_df: pd.DataFrame,
     attribute_cols: Sequence[str],
-    storage: ExperimentStorage,
+    storage: CsvStorage,
     agent_controller: AgentController,
     run_id: str = "default",
     config_hash: str = "unknown",
@@ -397,7 +417,7 @@ def run_drift_protocol(
                 dur = 0
                 def _decide_and_record_dur(p):
                     nonlocal dur
-                    dec = ctrl.decide(profile.description, CandidatePool(p, attribute_cols), strategy_override=strategy_override, profile_key_hint=profile.key)
+                    dec = ctrl.decide(profile.description, CandidatePool(p, attribute_cols), strategy_override=strategy_override)
                     dur += dec.total_duration
                     return dec.top_service_id()
                 
@@ -444,5 +464,7 @@ def run_drift_protocol(
                 lambda p=profile, t_i=trial_i, d=default_degraded: _run_single_drift_trial(p, t_i, d)
             )
 
-    ExperimentRunner(max_workers=max_workers).execute(trials)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for future in concurrent.futures.as_completed([executor.submit(t) for t in trials]):
+            future.result()
     return storage.load_all()

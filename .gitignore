@@ -96,4 +96,11 @@ results/figures/*.png
 
 # Cache files
 *.db
-llm_cache.db
+llm_cache*
+*.dat
+*.dir
+*.bak
+
+# Scratch / Debug files
+scratch_*
+full_experiment_log.txt

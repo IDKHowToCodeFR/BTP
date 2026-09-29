@@ -30,7 +30,8 @@ from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
 from agentic_selection.evaluation.protocol import run_drift_protocol, DRIFT_RESULT_FIELDS
 from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks import TASK_PROFILES
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 
 
 def main() -> int:
@@ -43,7 +44,7 @@ def main() -> int:
 
     setup_logging()
     project_root = Path(__file__).resolve().parents[1]
-    config = load_config(project_root / args.config)
+    config = yaml.safe_load(open(project_root / args.config, encoding="utf-8"))
 
     data_dir = project_root / config["paths"]["data_dir"]
     norm_path = data_dir / "processed" / "qws_normalized.csv"

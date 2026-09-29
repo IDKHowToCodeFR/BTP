@@ -1,11 +1,8 @@
-"""Experiment storage abstraction (architecture deepening).
-
-Provides the `ExperimentStorage` interface and a `CsvStorage` adapter
-for resumable tracking of experiment trials.
+"""Experiment storage (append-only CSV).
 """
 from __future__ import annotations
 
-import abc
+
 import csv
 import threading
 from pathlib import Path
@@ -14,26 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 
-class ExperimentStorage(abc.ABC):
-    """Deep interface for tracking experiment results and resumability."""
-
-    @abc.abstractmethod
-    def should_run(self, key_dict: Dict[str, Any]) -> bool:
-        """Return True if the trial defined by key_dict has NOT been recorded."""
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def record(self, row: Dict[str, Any]) -> None:
-        """Record the full result of a completed trial."""
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def load_all(self) -> pd.DataFrame:
-        """Load all recorded trials into a DataFrame."""
-        raise NotImplementedError
-
-
-class CsvStorage(ExperimentStorage):
+class CsvStorage:
     """Adapter that persists trials to an append-only CSV file.
     
     Caches the existing keys in memory to make `should_run` O(1) without

@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 
 from agentic_selection.evaluation import make_figures, render_markdown_tables
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 
 
 def main() -> int:
@@ -32,7 +33,7 @@ def main() -> int:
 
     setup_logging()
     project_root = Path(__file__).resolve().parents[1]
-    config = load_config(project_root / args.config)
+    config = yaml.safe_load(open(project_root / args.config, encoding="utf-8"))
     results_dir = project_root / config["paths"]["results_dir"]
     figures_dir = project_root / config["paths"]["figures_dir"]
 

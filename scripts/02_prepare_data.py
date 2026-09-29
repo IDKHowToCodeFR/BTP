@@ -18,7 +18,8 @@ from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
 from agentic_selection.data.preprocessing import normalize_benefit_oriented
 from agentic_selection.data.qws_loader import load_qws
 from agentic_selection.data.wsdream_loader import load_wsdream_dataset1, wsdream1_to_candidate_pool
-from agentic_selection.utils import load_config, setup_logging
+from agentic_selection.utils import setup_logging
+import yaml
 
 
 def main() -> int:
@@ -27,7 +28,7 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_logging()
-    config = load_config(args.config)
+    config = yaml.safe_load(open(args.config, encoding="utf-8"))
     data_dir = Path(config["paths"]["data_dir"])
 
     qws_raw_path = data_dir / "raw" / "qws" / "QWS_Dataset_v2.txt"

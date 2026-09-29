@@ -147,6 +147,7 @@ def get_lookup_weights(
           it cannot understand novel phrasing, only pattern-match it.
         - "embedding_knn": matches against the task profiles' descriptions
           using sentence-transformers.
+        - "soft_knn": blends weights from all known task profiles using softmax over embedding similarities (temp 0.1)
         - "global": always fall back to GLOBAL_FIXED_WEIGHTS on a miss.
         - "raise": raise KeyError on a miss (useful in tests).
     similarity_cutoff : float
@@ -171,6 +172,9 @@ def get_lookup_weights(
         if key_match:
             return dict(TASK_LOOKUP_TABLE[key_match])
         return dict(GLOBAL_FIXED_WEIGHTS)
+
+    if fallback == "soft_knn":
+        return soft_knn_weights(profile_key, temp=0.1)
 
     if fallback != "nearest":
         raise ValueError(f"unknown fallback mode: {fallback}")
@@ -216,3 +220,37 @@ def nearest_profile_key(profile_key: str, similarity_cutoff: float = 0.5, fallba
     candidates = list(TASK_LOOKUP_TABLE.keys())
     matches = difflib.get_close_matches(key, candidates, n=1, cutoff=similarity_cutoff)
     return matches[0] if matches else None
+
+
+def soft_knn_weights(profile_key: str, temp: float = 0.1) -> Weights:
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embed_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+        
+    from agentic_selection.tasks import TASK_PROFILES
+    candidates = list(TASK_PROFILES)
+    
+    query_emb = _embed_model.encode(profile_key, convert_to_tensor=True)
+    cand_docs = [p.description for p in candidates]
+    cand_embs = _embed_model.encode(cand_docs, convert_to_tensor=True)
+    
+    from sentence_transformers import util
+    import torch
+    scores = util.cos_sim(query_emb, cand_embs)[0]
+    
+    # softmax with temperature
+    weights = torch.softmax(scores / temp, dim=0)
+    
+    blended = {c: 0.0 for c in QWS_ATTRIBUTE_COLUMNS}
+    for i, p in enumerate(candidates):
+        w = float(weights[i])
+        p_weights = TASK_LOOKUP_TABLE[p.key]
+        for c in QWS_ATTRIBUTE_COLUMNS:
+            blended[c] += w * p_weights.get(c, 0.0)
+            
+    # normalize
+    total = sum(blended.values())
+    if total > 0:
+        return {c: v/total for c,v in blended.items()}
+    return dict(GLOBAL_FIXED_WEIGHTS)
