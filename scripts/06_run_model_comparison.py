@@ -153,7 +153,7 @@ def main() -> int:
             if memory_path.exists():
                 memory_path.unlink()
                 
-            backend = OllamaBackend(model, options={"seed": 42, "temperature": 0.0})
+            backend = OllamaBackend(model, seed=42, temperature=0.0)
             controller = AgentController(
                 backend=backend,
                 attribute_cols=QWS_ATTRIBUTE_COLUMNS,

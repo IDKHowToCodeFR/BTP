@@ -120,7 +120,7 @@ def run_stable_protocol(
         reference_weights_by_key[f"held_out_{i}"] = lookup_table[t.nearest_profile_key]
 
     def _run_single_condition(task_key, task_kind, task_description, seed, condition, ref_weights):
-        if not storage.should_run({"task_key": task_key, "pool_seed": seed, "condition": condition}):
+        if not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "pool_seed": seed, "condition": condition}):
             return
 
         pool_df = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
@@ -320,7 +320,7 @@ def run_drift_protocol(
         task_key = profile.key
         trial_seed = base_seed + trial_i
 
-        if all(not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
+        if all(not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
             return
 
         pool = None
@@ -357,7 +357,7 @@ def run_drift_protocol(
         )
 
         for condition in conditions:
-            if not storage.should_run({"task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
+            if not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
                 continue
 
             if condition == "global_fixed":

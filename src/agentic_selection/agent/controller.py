@@ -53,6 +53,7 @@ class AgentDecision:
     latency_seconds: float
     api_calls: int
     raw_llm_text: Optional[str]
+    category: Optional[str] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_duration: int = 0
@@ -233,6 +234,7 @@ class AgentController:
             latency_seconds=latency,
             api_calls=api_calls,
             raw_llm_text=raw_text,
+            category=validated.category,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_duration=total_duration,

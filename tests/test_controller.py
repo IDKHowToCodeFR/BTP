@@ -87,3 +87,28 @@ def test_controller_unknown_strategy_override_raises(tmp_path):
     ctrl = AgentController(MockBackend(fixed_response=resp), ATTRS, tmp_path / "mem.jsonl")
     with pytest.raises(ValueError):
         ctrl.decide("task", make_pool(), strategy_override="not_a_real_strategy")
+def test_controller_cache_skips_diff_model(tmp_path):
+    mem_path = tmp_path / "mem.jsonl"
+    resp = json.dumps({"weights": {"response_time": 1.0, "availability": 1.0, "throughput": 1.0}, "strategy": "topsis", "justification": "j"})
+    class FakeBackend(MockBackend):
+        def __init__(self, name="fake", model="modelA"):
+            super().__init__(fixed_response=resp)
+            self._name = name
+            self.model = model
+            self.calls = 0
+        @property
+        def name(self):
+            return self._name
+        def complete(self, *args, **kwargs):
+            self.calls += 1
+            return super().complete(*args, **kwargs)
+    b1 = FakeBackend(model="modelA")
+    ctrl1 = AgentController(b1, ATTRS, mem_path)
+    ctrl1.decide("task", make_pool(), use_memory=False)
+    assert b1.calls == 1
+    ctrl1.decide("task", make_pool(), use_memory=False)
+    assert b1.calls == 1
+    b2 = FakeBackend(model="modelB")
+    ctrl2 = AgentController(b2, ATTRS, mem_path)
+    ctrl2.decide("task", make_pool(), use_memory=False)
+    assert b2.calls == 1

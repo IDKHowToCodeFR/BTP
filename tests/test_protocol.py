@@ -33,7 +33,7 @@ def controller(tmp_path):
 
 def test_run_stable_protocol_produces_expected_row_count(synthetic_qws_normalized, controller, tmp_path):
     out_csv = tmp_path / "stable.csv"
-    storage = CsvStorage(out_csv, ["task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
     small_held_out = HELD_OUT_TASKS[:1]
     df = run_stable_protocol(
         synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
@@ -46,7 +46,7 @@ def test_run_stable_protocol_produces_expected_row_count(synthetic_qws_normalize
 
 def test_run_stable_protocol_is_resumable_no_duplicate_rows(synthetic_qws_normalized, controller, tmp_path):
     out_csv = tmp_path / "stable.csv"
-    storage = CsvStorage(out_csv, ["task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
     small_held_out = HELD_OUT_TASKS[:1]
     df1 = run_stable_protocol(
         synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
@@ -64,7 +64,7 @@ def test_run_stable_protocol_is_resumable_no_duplicate_rows(synthetic_qws_normal
 
 def test_run_stable_protocol_extending_n_pools_only_adds_new_rows(synthetic_qws_normalized, controller, tmp_path):
     out_csv = tmp_path / "stable.csv"
-    storage = CsvStorage(out_csv, ["task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
     small_held_out = HELD_OUT_TASKS[:1]
     df1 = run_stable_protocol(
         synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
@@ -83,7 +83,7 @@ def test_run_stable_protocol_extending_n_pools_only_adds_new_rows(synthetic_qws_
 
 def test_run_drift_protocol_produces_rows_for_each_condition(synthetic_qws_normalized, controller, tmp_path):
     out_csv = tmp_path / "drift.csv"
-    storage = CsvStorage(out_csv, ["task_key", "trial_seed", "condition"], DRIFT_RESULT_FIELDS)
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "trial_seed", "condition"], DRIFT_RESULT_FIELDS)
     df = run_drift_protocol(
         synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
         n_trials=1, pool_size=10, n_rounds=8, degrade_start_round=3,
@@ -95,7 +95,7 @@ def test_run_drift_protocol_produces_rows_for_each_condition(synthetic_qws_norma
 
 def test_run_drift_protocol_resumable(synthetic_qws_normalized, controller, tmp_path):
     out_csv = tmp_path / "drift.csv"
-    storage = CsvStorage(out_csv, ["task_key", "trial_seed", "condition"], DRIFT_RESULT_FIELDS)
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "trial_seed", "condition"], DRIFT_RESULT_FIELDS)
     df1 = run_drift_protocol(
         synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
         n_trials=1, pool_size=10, n_rounds=8, degrade_start_round=3,

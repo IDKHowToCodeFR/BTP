@@ -88,13 +88,15 @@ def _fallback(
         weights = {c: 1.0 / len(attribute_cols) for c in attribute_cols}
     else:
         weights = {c: v / total for c, v in weights.items()}
+    from agentic_selection.baselines.lookup_table import nearest_profile_key
+    category = nearest_profile_key(lookup_query, fallback="embedding_knn")
     return ValidationResult(
         weights=weights,
         strategy=fallback_strategy,
         justification=f"[FALLBACK] {reason}",
         fallback_triggered=True,
         fallback_reason=reason,
-        category=None,
+        category=category,
     )
 
 
