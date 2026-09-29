@@ -128,12 +128,3 @@ def test_explicit_degenerate_threshold_override():
     result = validate_agent_output(parsed, "task", ATTRS, degenerate_threshold=0.75)
     assert result.fallback_triggered
 
-def test_fallback_hits_correctly():
-    # If the hint matches an exact profile key in the lookup table,
-    # the fallback should bypass embeddings and use it.
-    parsed = None # Triggers fallback
-    from agentic_selection.tasks import TASK_PROFILES
-    profile_key = TASK_PROFILES[0].key
-    result = validate_agent_output(parsed, "Some totally different description", ATTRS)
-    assert result.fallback_triggered
-    assert result.category == profile_key

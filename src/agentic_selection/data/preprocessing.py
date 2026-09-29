@@ -140,6 +140,24 @@ class CandidatePool:
     def index(self):
         return self.df.index
 
+@dataclass
+class NormalizedCandidatePool(CandidatePool):
+    """A CandidatePool guaranteed to have its attributes min-max normalized to [0,1]
+    with higher values indicating higher utility (benefit-oriented)."""
+    
+    def __post_init__(self):
+        if len(self.attribute_cols) > 0:
+            for c in self.attribute_cols:
+                if c not in self.df.columns:
+                    raise KeyError(f"attribute column '{c}' not found in df.columns")
+            sub = self.df.loc[:, list(self.attribute_cols)]
+            numeric = sub.select_dtypes(include=[np.number])
+            if not numeric.empty:
+                min_val = numeric.min(skipna=True).min()
+                max_val = numeric.max(skipna=True).max()
+                if pd.notna(min_val) and min_val < -1e-5 or pd.notna(max_val) and max_val > 1.0 + 1e-5:
+                    raise ValueError(f"NormalizedCandidatePool requires values in [0,1], got min {min_val}, max {max_val}")
+
 
 def inject_missingness(
     df: pd.DataFrame,

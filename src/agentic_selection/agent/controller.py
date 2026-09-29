@@ -28,15 +28,7 @@ from agentic_selection.agent.reasoning import (
 from agentic_selection.agent.validation import ValidationResult, validate_agent_output
 from agentic_selection.baselines import skyline_then_topsis, topsis, weighted_sum
 
-from agentic_selection.data.preprocessing import CandidatePool
-
-# --- Action Dispatch ---
-
-ACTION_DISPATCH: Dict[str, Callable[[CandidatePool, dict], pd.Series]] = {
-    "weighted_sum": weighted_sum,
-    "topsis": topsis,
-    "skyline_then_topsis": skyline_then_topsis,
-}
+from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
 
 @dataclass
@@ -96,6 +88,7 @@ class AgentController:
         tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
         k_memory: int = 3,
         reasoning_strategy: Optional[ReasoningStrategy] = None,
+        action_dispatch: Optional[Dict[str, Callable[[NormalizedCandidatePool, dict], pd.Series]]] = None,
     ):
         self.backend = backend
         self.attribute_cols = list(attribute_cols)
@@ -103,13 +96,22 @@ class AgentController:
         self.tool_menu = tuple(tool_menu)
         self.k_memory = k_memory
         self.reasoning_strategy = reasoning_strategy or DirectWeightReasoner()
+        if action_dispatch is None:
+            self.action_dispatch = {
+                "weighted_sum": weighted_sum,
+                "topsis": topsis,
+                "skyline_then_topsis": skyline_then_topsis,
+            }
+        else:
+            self.action_dispatch = dict(action_dispatch)
+            
         cache_path = Path(memory_path).parent / "llm_cache.db"
         self._llm_cache = SQLiteCache(cache_path)
 
     def decide(
         self,
         task_description: str,
-        candidate_pool: CandidatePool,
+        candidate_pool: NormalizedCandidatePool,
         strategy_override: Optional[str] = None,
         use_memory: bool = True,
     ) -> AgentDecision:
@@ -178,11 +180,11 @@ class AgentController:
         )
 
         effective_strategy = strategy_override or validated.strategy
-        action_fn = ACTION_DISPATCH.get(effective_strategy)
+        action_fn = self.action_dispatch.get(effective_strategy)
         if action_fn is None:
             raise ValueError(
-                f"strategy '{effective_strategy}' is not in ACTION_DISPATCH "
-                f"{list(ACTION_DISPATCH)}"
+                f"strategy '{effective_strategy}' is not in action_dispatch "
+                f"{list(self.action_dispatch)}"
             )
         ranking = action_fn(candidate_pool, validated.weights)
 

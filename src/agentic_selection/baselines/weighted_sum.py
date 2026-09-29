@@ -14,7 +14,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from agentic_selection.data.preprocessing import CandidatePool
+from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
 
 def _weights_to_array(
@@ -43,7 +43,7 @@ def _weights_to_array(
 
 
 def weighted_sum(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
 ) -> pd.Series:
     """Score every row of ``df`` as a weighted sum of ``attribute_cols``.
@@ -84,7 +84,7 @@ def weighted_sum(
 
 
 def rank_weighted_sum(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
 ) -> pd.DataFrame:
     """Convenience wrapper: returns df sorted best-first with a score column."""

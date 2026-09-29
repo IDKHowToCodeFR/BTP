@@ -20,11 +20,11 @@ import numpy as np
 import pandas as pd
 
 from agentic_selection.baselines.topsis import topsis
-from agentic_selection.data.preprocessing import CandidatePool
+from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
 
 def skyline(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     chunk_size: int = 500,
 ) -> pd.Index:
     """Return the index labels of the non-dominated (skyline) rows of ``df``.
@@ -98,7 +98,7 @@ def _skyline_numba(X: np.ndarray) -> np.ndarray:
 
 
 def skyline_then_topsis(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
     chunk_size: int = 500,
 ) -> pd.Series:
@@ -115,7 +115,7 @@ def skyline_then_topsis(
     prefers a skyline member when one exists.
     """
     sky_idx = skyline(pool, chunk_size=chunk_size)
-    sky_pool = CandidatePool(pool.df.loc[sky_idx], pool.attribute_cols)
+    sky_pool = NormalizedCandidatePool(pool.df.loc[sky_idx], pool.attribute_cols)
     sky_scores = topsis(sky_pool, weights)
 
     full = pd.Series(-1.0, index=pool.df.index, name="skyline_topsis_score")
@@ -124,7 +124,7 @@ def skyline_then_topsis(
 
 
 def rank_skyline_then_topsis(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
 ) -> pd.DataFrame:
     scores = skyline_then_topsis(pool, weights)

@@ -126,7 +126,6 @@ def validate_agent_output(
             task_description,
             f"strategy field missing or not in allowed menu {tuple(tool_menu)}: {strategy!r}",
             attribute_cols,
-            profile_key_hint=profile_key_hint,
         )
 
     weights = parsed.get("weights")
@@ -142,7 +141,6 @@ def validate_agent_output(
             task_description,
             reason,
             attribute_cols,
-            profile_key_hint=profile_key_hint,
         )
 
     try:
@@ -171,7 +169,6 @@ def validate_agent_output(
             f"degenerate weights: '{max_attr}' alone holds {max_weight:.2f} "
             f"of total mass (> {threshold} threshold for {len(attribute_cols)} attributes)",
             attribute_cols,
-            profile_key_hint=profile_key_hint,
         )
 
     justification = parsed.get("justification")

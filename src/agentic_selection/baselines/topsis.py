@@ -20,13 +20,13 @@ from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from agentic_selection.data.preprocessing import CandidatePool
+from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
 from agentic_selection.baselines.weighted_sum import _weights_to_array
 
 
 def topsis(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
 ) -> pd.Series:
     """Compute TOPSIS closeness coefficients for every row of ``df``.
@@ -82,7 +82,7 @@ def topsis(
 
 
 def rank_topsis(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     weights: Mapping[str, float],
 ) -> pd.DataFrame:
     """Convenience wrapper: returns df sorted best-first with a score column."""

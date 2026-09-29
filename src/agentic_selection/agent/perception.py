@@ -10,7 +10,7 @@ from itertools import combinations
 from typing import Dict, List, Sequence, Protocol
 import numpy as np
 import pandas as pd
-from agentic_selection.data.preprocessing import CandidatePool
+from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
 # --- Data Structures ---
 @dataclass
@@ -107,7 +107,7 @@ def _outlier_row_fraction(df: pd.DataFrame, attribute_cols: Sequence[str]) -> fl
 
 
 def summarize_pool(
-    pool: CandidatePool,
+    pool: NormalizedCandidatePool,
     missing_df: pd.DataFrame | None = None,
 ) -> PoolPerception:
     """Compute a PoolPerception summary for `pool`.

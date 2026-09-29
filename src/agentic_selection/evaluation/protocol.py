@@ -19,7 +19,8 @@ import csv
 import json
 import concurrent.futures
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple, Any, Iterable
 
 import numpy as np
 import pandas as pd
@@ -27,45 +28,50 @@ import pandas as pd
 from agentic_selection.agent.controller import AgentController
 from agentic_selection.baselines import GLOBAL_FIXED_WEIGHTS, TASK_LOOKUP_TABLE, topsis
 from agentic_selection.baselines.lookup_table import get_lookup_weights
-from agentic_selection.data.preprocessing import CandidatePool, sample_candidate_pool
+from agentic_selection.data.preprocessing import NormalizedCandidatePool, sample_candidate_pool
 from agentic_selection.drift.simulate import find_common_top_choice, simulate_drift_sequence
 from agentic_selection.evaluation.metrics import adaptation_lag, regret
-import concurrent.futures
 from agentic_selection.evaluation.storage import CsvStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
+
+@dataclass
+class Trial:
+    keys: Dict[str, Any]
+    execute: Callable[[], Dict[str, Any] | None]
+
+
+class ExperimentEngine:
+    """Decoupled evaluation orchestrator. Isolates thread pooling and storage boundaries
+    from the domain-specific trial implementations. Deep module."""
+    def __init__(self, storage: CsvStorage, max_workers: int = 1):
+        self.storage = storage
+        self.max_workers = max_workers
+        
+    def run(self, trials: Iterable[Trial]) -> pd.DataFrame:
+        def _run_trial(trial: Trial):
+            if not self.storage.should_run(trial.keys):
+                return
+            result = trial.execute()
+            if result is not None:
+                self.storage.record(result)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for future in concurrent.futures.as_completed([executor.submit(_run_trial, t) for t in trials]):
+                future.result()
+        return self.storage.load_all()
+
+
 STABLE_CONDITIONS = ("uniform", "global_every_round", "lookup_every_round", "embedding_knn", "agent_weights_only", "agent_full")
 STABLE_RESULT_FIELDS = [
-    "run_id",
-    "config_hash",
-    "git_sha",
-    "model",
-    "task_key",
-    "task_kind",  # "profile" | "held_out"
-    "task_description",
-    "pool_seed",
-    "condition",
-    "regret",
-    "fallback_triggered",
-    "latency_seconds",
-    "api_calls",
-    "top_service_id",
-    "strategy",
-    "weights_json",
-    "category",
-    "is_synthetic_data",
-    "prompt_tokens",
-    "completion_tokens",
-    "total_duration",
-    "weight_l1",
-    "weight_entropy",
-    "max_weight",
-    "top3_overlap",
-    "normalized_regret",
-    "ndcg_at_5",
-    "kendall_tau",
+    "run_id", "config_hash", "git_sha", "model", "task_key",
+    "task_kind", "task_description", "pool_seed", "condition",
+    "regret", "fallback_triggered", "latency_seconds", "api_calls",
+    "top_service_id", "strategy", "weights_json", "category",
+    "is_synthetic_data", "prompt_tokens", "completion_tokens", "total_duration",
+    "weight_l1", "weight_entropy", "max_weight", "top3_overlap",
+    "normalized_regret", "ndcg_at_5", "kendall_tau",
 ]
-
 
 def run_stable_protocol(
     normalized_df: pd.DataFrame,
@@ -88,25 +94,6 @@ def run_stable_protocol(
     lookup_table: Optional[Dict[str, Dict[str, float]]] = None,
     lookup_weights_fn: Optional[Callable[[str], Dict[str, float]]] = None,
 ) -> pd.DataFrame:
-    """Run the stable-condition protocol (paper §4.3) over every task
-    profile plus the held-out set, `n_pools` independent pools each,
-    across `conditions`. Resumable: re-running with the same
-    `output_csv` skips trials already recorded there.
-
-    `global_fixed_weights`, `lookup_table`, and `lookup_weights_fn` default
-    to the QWS 9-attribute versions (baselines.GLOBAL_FIXED_WEIGHTS,
-    baselines.TASK_LOOKUP_TABLE, baselines.get_lookup_weights) if not
-    given -- this function is otherwise dataset-agnostic (it only touches
-    `normalized_df` through `attribute_cols` and `sample_candidate_pool`),
-    so passing the WS-DREAM-specific versions
-    (baselines.wsdream_lookup_table) along with `attribute_cols=
-    WSDREAM_ATTRIBUTE_COLUMNS` and `task_profiles=WSDREAM_TASK_PROFILES`
-    runs the exact same protocol against WS-DREAM Dataset #1 instead of
-    QWS -- see scripts/07_run_wsdream_validation.py.
-
-    Returns the full accumulated results (including any prior runs
-    already in output_csv) as a DataFrame.
-    """
     global_fixed_weights = global_fixed_weights if global_fixed_weights is not None else GLOBAL_FIXED_WEIGHTS
     lookup_table = lookup_table if lookup_table is not None else TASK_LOOKUP_TABLE
     lookup_weights_fn = lookup_weights_fn if lookup_weights_fn is not None else get_lookup_weights
@@ -119,7 +106,6 @@ def run_stable_protocol(
     for i, t in enumerate(held_out_tasks):
         if hasattr(t, "reference_weights"):
             w = {c: getattr(t, "reference_weights").get(c, 0.0) for c in attribute_cols}
-            # normalize if needed
             total = sum(w.values())
             if total > 0:
                 w = {c: v / total for c, v in w.items()}
@@ -127,12 +113,9 @@ def run_stable_protocol(
         else:
             reference_weights_by_key[f"held_out_{i}"] = lookup_table[getattr(t, "nearest_profile_key")]
 
-    def _run_single_condition(task_key, task_kind, task_description, seed, condition, ref_weights):
-        if not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "pool_seed": seed, "condition": condition}):
-            return
-
+    def _execute_stable(task_key, task_kind, task_description, seed, condition, ref_weights):
         pool_df = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
-        pool = CandidatePool(pool_df, attribute_cols)
+        pool = NormalizedCandidatePool(pool_df, attribute_cols)
 
         if condition in ("global_every_round", "global_fixed"):
             scores = topsis(pool, global_fixed_weights)
@@ -162,7 +145,6 @@ def run_stable_protocol(
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition == "embedding_knn":
             w = get_lookup_weights(task_description, fallback="embedding_knn")
-            # Restrict weights to current attribute_cols
             w = {c: w.get(c, 0.0) for c in attribute_cols}
             scores = topsis(pool, w)
             fallback, latency, api_calls = False, 0.0, 0
@@ -205,7 +187,6 @@ def run_stable_protocol(
             weight_l1, weight_entropy, max_weight, top3_overlap, normalized_regret, ndcg_at_k, kendall_tau
         )
         
-        # Calculate metric values
         if condition in ("global_every_round", "global_fixed", "lookup_every_round", "lookup_table", "uniform", "embedding_knn", "soft_knn"):
             pred_weights = json.loads(w_json)
         else:
@@ -215,7 +196,6 @@ def run_stable_protocol(
         metric_w_ent = weight_entropy(pred_weights, attribute_cols)
         metric_max_w = max_weight(pred_weights, attribute_cols)
         
-        # Calculate reference ranking for overlap/ranking metrics
         ref_scores = pool.df.loc[:, list(attribute_cols)].to_numpy(dtype=float) @ np.array(
             [ref_weights[c] for c in attribute_cols], dtype=float
         )
@@ -226,7 +206,7 @@ def run_stable_protocol(
         metric_ndcg = ndcg_at_k(scores, ref_ranking, k=5)
         metric_tau = kendall_tau(scores, ref_ranking)
         
-        row = {
+        return {
             "run_id": run_id,
             "config_hash": config_hash,
             "git_sha": git_sha,
@@ -256,7 +236,6 @@ def run_stable_protocol(
             "ndcg_at_5": metric_ndcg,
             "kendall_tau": metric_tau,
         }
-        storage.record(row)
 
     trials = []
     for task_key, task_kind, task_description in all_tasks:
@@ -264,37 +243,24 @@ def run_stable_protocol(
         for pool_i in range(n_pools):
             seed = base_seed + pool_i
             for condition in conditions:
+                keys = {"run_id": run_id, "model": model, "task_key": task_key, "pool_seed": seed, "condition": condition}
                 trials.append(
-                    lambda tk=task_key, tkind=task_kind, td=task_description, s=seed, c=condition, rw=ref_weights: _run_single_condition(tk, tkind, td, s, c, rw)
+                    Trial(
+                        keys=keys,
+                        execute=lambda tk=task_key, tkind=task_kind, td=task_description, s=seed, c=condition, rw=ref_weights: _execute_stable(tk, tkind, td, s, c, rw)
+                    )
                 )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for future in concurrent.futures.as_completed([executor.submit(t) for t in trials]):
-            future.result()
-    return storage.load_all()
-
+    engine = ExperimentEngine(storage, max_workers)
+    return engine.run(trials)
 
 DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "lookup_every_round", "global_every_round", "agent_weights_only", "agent_full")
 DRIFT_RESULT_FIELDS = [
-    "run_id",
-    "config_hash",
-    "git_sha",
-    "model",
-    "task_key",
-    "trial_seed",
-    "condition",
-    "target_service_id",
-    "degrade_start_round",
-    "n_rounds",
-    "profile",
-    "lag_rounds",
-    "censored",
-    "trace_json",
-    "is_synthetic_data",
-    "n_switches",
-    "total_duration",
+    "run_id", "config_hash", "git_sha", "model", "task_key",
+    "trial_seed", "condition", "target_service_id", "degrade_start_round",
+    "n_rounds", "profile", "lag_rounds", "censored", "trace_json",
+    "is_synthetic_data", "n_switches", "total_duration",
 ]
-
 
 def run_drift_protocol(
     normalized_df: pd.DataFrame,
@@ -320,35 +286,13 @@ def run_drift_protocol(
     degraded_attributes_by_profile: Dict[str, List[str]] | None = None,
     conditions: Sequence[str] = DRIFT_CONDITIONS,
 ) -> pd.DataFrame:
-    """Run the drift experiment (paper §3.8, §4.3) over every task
-    profile, `n_trials` independent drift scenarios each. Resumable like
-    run_stable_protocol.
-
-    For each trial: sample a pool, find a service both the global-fixed
-    and lookup-table baselines currently agree is the #1 choice (trying
-    up to `max_seed_attempts_for_consensus` seeds -- not every random
-    pool has a clean consensus candidate, which is expected and simply
-    skipped), degrade that service's dominant attribute(s) for this
-    profile starting at `degrade_start_round`, then measure each
-    condition's adaptation lag. Static conditions (global_fixed,
-    lookup_table) are re-evaluated only every `static_reevaluation_period`
-    rounds; agent conditions are re-evaluated every round -- see
-    evaluation/metrics.py's module docstring for why this asymmetry is
-    the correct, non-trivial way to operationalize this comparison.
-    """
-    def _run_single_drift_trial(profile, trial_i, default_degraded):
-        task_key = profile.key
-        trial_seed = base_seed + trial_i
-
-        if all(not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "trial_seed": trial_seed, "condition": c}) for c in conditions):
-            return
-
+    def _execute_drift(profile, trial_i, default_degraded, task_key, trial_seed, condition):
         pool = None
         target = None
         for attempt in range(max_seed_attempts_for_consensus):
             candidate_seed = trial_seed * 1000 + attempt
             pool_df = sample_candidate_pool(normalized_df, n=pool_size, seed=candidate_seed)
-            candidate_pool = CandidatePool(pool_df, attribute_cols)
+            candidate_pool = NormalizedCandidatePool(pool_df, attribute_cols)
             methods = {
                 "global_fixed": lambda p: topsis(p, GLOBAL_FIXED_WEIGHTS),
                 "lookup_table": lambda p: topsis(p, TASK_LOOKUP_TABLE[profile.key]),
@@ -362,7 +306,7 @@ def run_drift_protocol(
                 f"[drift] profile={profile.key} trial={trial_i}: no consensus "
                 f"target found in {max_seed_attempts_for_consensus} seed attempts, skipping"
             )
-            return
+            return None
 
         seq = simulate_drift_sequence(
             pool.df,
@@ -376,95 +320,93 @@ def run_drift_protocol(
             seed=trial_seed,
         )
 
-        for condition in conditions:
-            if not storage.should_run({"run_id": run_id, "model": model, "task_key": task_key, "trial_seed": trial_seed, "condition": condition}):
-                continue
-
-            if condition == "global_fixed":
-                decide_fn = lambda p: topsis(CandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
-                reeval = static_reevaluation_period
-                dur = 0
-            elif condition == "global_every_round":
-                decide_fn = lambda p: topsis(CandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
-                reeval = None
-                dur = 0
-            elif condition == "lookup_table":
-                w = TASK_LOOKUP_TABLE[profile.key]
-                decide_fn = lambda p, w=w: topsis(CandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
-                reeval = static_reevaluation_period
-                dur = 0
-            elif condition == "lookup_every_round":
-                w = TASK_LOOKUP_TABLE[profile.key]
-                decide_fn = lambda p, w=w: topsis(CandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
-                reeval = None
-                dur = 0
-            elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
-                strategy_override = "topsis" if condition == "agent_weights_only" else None
-                base_ctrl = rag_controller if condition == "rag_agent" and "rag_controller" in locals() and rag_controller else agent_controller
-                from pathlib import Path
-                fresh_mem_path = Path(base_ctrl.memory.path).parent / f"mem_{run_id}_{condition}_{trial_seed}.jsonl"
-                ctrl = AgentController(
-                    backend=base_ctrl.backend,
-                    attribute_cols=base_ctrl.attribute_cols,
-                    memory_path=fresh_mem_path,
-                    tool_menu=base_ctrl.tool_menu,
-                    k_memory=base_ctrl.k_memory,
-                    reasoning_strategy=base_ctrl.reasoning_strategy
-                )
-                ctrl._llm_cache = base_ctrl._llm_cache  # Share cache
-                
-                # capture total duration from decisions
-                dur = 0
-                def _decide_and_record_dur(p):
-                    nonlocal dur
-                    dec = ctrl.decide(profile.description, CandidatePool(p, attribute_cols), strategy_override=strategy_override)
-                    dur += dec.total_duration
-                    return dec.top_service_id()
-                
-                decide_fn = _decide_and_record_dur
-                reeval = None
-            else:
-                raise ValueError(f"unknown condition: {condition}")
-
-            result = adaptation_lag(
-                seq.pools, target, degrade_start_round, decide_fn, reevaluation_period=reeval
+        if condition == "global_fixed":
+            decide_fn = lambda p: topsis(NormalizedCandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
+            reeval = static_reevaluation_period
+            dur = 0
+        elif condition == "global_every_round":
+            decide_fn = lambda p: topsis(NormalizedCandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
+            reeval = None
+            dur = 0
+        elif condition == "lookup_table":
+            w = TASK_LOOKUP_TABLE[profile.key]
+            decide_fn = lambda p, w=w: topsis(NormalizedCandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
+            reeval = static_reevaluation_period
+            dur = 0
+        elif condition == "lookup_every_round":
+            w = TASK_LOOKUP_TABLE[profile.key]
+            decide_fn = lambda p, w=w: topsis(NormalizedCandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
+            reeval = None
+            dur = 0
+        elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
+            strategy_override = "topsis" if condition == "agent_weights_only" else None
+            base_ctrl = agent_controller
+            fresh_mem_path = Path(base_ctrl.memory.path).parent / f"mem_{run_id}_{condition}_{trial_seed}.jsonl"
+            ctrl = AgentController(
+                backend=base_ctrl.backend,
+                attribute_cols=base_ctrl.attribute_cols,
+                memory_path=fresh_mem_path,
+                tool_menu=base_ctrl.tool_menu,
+                k_memory=base_ctrl.k_memory,
+                reasoning_strategy=base_ctrl.reasoning_strategy
             )
-
-            trace = result.active_recommendation_trace
-            n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
+            ctrl._llm_cache = base_ctrl._llm_cache
             
-            row = {
-                "run_id": run_id,
-                "config_hash": config_hash,
-                "git_sha": git_sha,
-                "model": model,
-                "task_key": task_key,
-                "trial_seed": trial_seed,
-                "condition": condition,
-                "target_service_id": target,
-                "degrade_start_round": degrade_start_round,
-                "n_rounds": n_rounds,
-                "profile": degradation_profile,
-                "lag_rounds": result.lag_rounds if result.lag_rounds is not None else "",
-                "censored": result.censored,
-                "trace_json": str(trace),
-                "is_synthetic_data": is_synthetic_data,
-                "n_switches": n_switches,
-                "total_duration": dur,
-            }
-            storage.record(row)
+            dur = 0
+            def _decide_and_record_dur(p):
+                nonlocal dur
+                dec = ctrl.decide(profile.description, NormalizedCandidatePool(p, attribute_cols), strategy_override=strategy_override)
+                dur += dec.total_duration
+                return dec.top_service_id()
+            
+            decide_fn = _decide_and_record_dur
+            reeval = None
+        else:
+            raise ValueError(f"unknown condition: {condition}")
+
+        result = adaptation_lag(
+            seq.pools, target, degrade_start_round, decide_fn, reevaluation_period=reeval
+        )
+
+        trace = result.active_recommendation_trace
+        n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
+        
+        return {
+            "run_id": run_id,
+            "config_hash": config_hash,
+            "git_sha": git_sha,
+            "model": model,
+            "task_key": task_key,
+            "trial_seed": trial_seed,
+            "condition": condition,
+            "target_service_id": target,
+            "degrade_start_round": degrade_start_round,
+            "n_rounds": n_rounds,
+            "profile": degradation_profile,
+            "lag_rounds": result.lag_rounds if result.lag_rounds is not None else "",
+            "censored": result.censored,
+            "trace_json": str(trace),
+            "is_synthetic_data": is_synthetic_data,
+            "n_switches": n_switches,
+            "total_duration": dur,
+        }
 
     trials = []
     for profile in task_profiles:
         default_degraded = (degraded_attributes_by_profile or {}).get(
             profile.key, profile.dominant_attributes[:2] or profile.dominant_attributes
         )
+        task_key = profile.key
         for trial_i in range(n_trials):
-            trials.append(
-                lambda p=profile, t_i=trial_i, d=default_degraded: _run_single_drift_trial(p, t_i, d)
-            )
+            trial_seed = base_seed + trial_i
+            for condition in conditions:
+                keys = {"run_id": run_id, "model": model, "task_key": task_key, "trial_seed": trial_seed, "condition": condition}
+                trials.append(
+                    Trial(
+                        keys=keys,
+                        execute=lambda p=profile, t_i=trial_i, d=default_degraded, tk=task_key, ts=trial_seed, c=condition: _execute_drift(p, t_i, d, tk, ts, c)
+                    )
+                )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for future in concurrent.futures.as_completed([executor.submit(t) for t in trials]):
-            future.result()
-    return storage.load_all()
+    engine = ExperimentEngine(storage, max_workers)
+    return engine.run(trials)

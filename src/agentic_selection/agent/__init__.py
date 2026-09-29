@@ -18,7 +18,7 @@ from agentic_selection.agent.reasoning import (
 )
 from agentic_selection.agent.validation import ValidationResult, validate_agent_output, default_degenerate_threshold
 from agentic_selection.agent.memory import MemoryStore, MemoryRecord, make_record, format_digest
-from agentic_selection.agent.controller import AgentController, AgentDecision, ACTION_DISPATCH
+from agentic_selection.agent.controller import AgentController, AgentDecision
 
 __all__ = [
     "PoolPerception", "summarize_pool",
@@ -29,5 +29,5 @@ __all__ = [
     "ReasoningStrategy", "DirectWeightReasoner", "ClassificationReasoner", "VotingClassificationReasoner",
     "ValidationResult", "validate_agent_output", "default_degenerate_threshold",
     "MemoryStore", "MemoryRecord", "make_record", "format_digest",
-    "AgentController", "AgentDecision", "ACTION_DISPATCH",
+    "AgentController", "AgentDecision",
 ]

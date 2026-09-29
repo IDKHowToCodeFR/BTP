@@ -12,7 +12,7 @@ ATTRS = ["response_time", "availability", "throughput"]
 
 def make_pool():
     import pandas as pd
-    from agentic_selection.data.preprocessing import CandidatePool
+    from agentic_selection.data.preprocessing import NormalizedCandidatePool
 
     df = pd.DataFrame(
         {
@@ -22,7 +22,7 @@ def make_pool():
         },
         index=["svcA", "svcB", "svcC"],
     )
-    return CandidatePool(df, ATTRS)
+    return NormalizedCandidatePool(df, ATTRS)
 
 
 def test_controller_well_formed_response_no_fallback(tmp_path):
