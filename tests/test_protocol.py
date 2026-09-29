@@ -107,3 +107,45 @@ def test_run_drift_protocol_resumable(synthetic_qws_normalized, controller, tmp_
         task_profiles=TASK_PROFILES[:1],
     )
     assert len(df1) == len(df2)
+
+def test_run_stable_protocol_does_not_skip_different_model(synthetic_qws_normalized, controller, tmp_path):
+    out_csv = tmp_path / "stable.csv"
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
+    small_held_out = HELD_OUT_TASKS[:1]
+    
+    # Run with Model A
+    df1 = run_stable_protocol(
+        synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
+        n_pools=1, pool_size=10, held_out_tasks=small_held_out, run_id="run1", model="model_A"
+    )
+    
+    # Run with Model B (same run_id)
+    df2 = run_stable_protocol(
+        synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
+        n_pools=1, pool_size=10, held_out_tasks=small_held_out, run_id="run1", model="model_B"
+    )
+    
+    # CSV should have records for BOTH model A and model B
+    df = pd.read_csv(out_csv)
+    assert set(df["model"].unique()) == {"model_A", "model_B"}
+
+def test_run_stable_protocol_does_not_skip_different_reasoner(synthetic_qws_normalized, controller, tmp_path):
+    out_csv = tmp_path / "stable.csv"
+    storage = CsvStorage(out_csv, ["run_id", "model", "task_key", "pool_seed", "condition"], STABLE_RESULT_FIELDS)
+    small_held_out = HELD_OUT_TASKS[:1]
+    
+    # Run with Reasoner A (encoded in model string)
+    df1 = run_stable_protocol(
+        synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
+        n_pools=1, pool_size=10, held_out_tasks=small_held_out, run_id="run1", model="model_A_direct"
+    )
+    
+    # Run with Reasoner B (encoded in model string)
+    df2 = run_stable_protocol(
+        synthetic_qws_normalized, QWS_ATTRIBUTE_COLUMNS, storage, controller,
+        n_pools=1, pool_size=10, held_out_tasks=small_held_out, run_id="run1", model="model_A_classification"
+    )
+    
+    # CSV should have records for BOTH reasoners
+    df = pd.read_csv(out_csv)
+    assert set(df["model"].unique()) == {"model_A_direct", "model_A_classification"}

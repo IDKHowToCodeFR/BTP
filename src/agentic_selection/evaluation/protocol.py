@@ -34,7 +34,7 @@ from agentic_selection.evaluation.runner import ExperimentRunner
 from agentic_selection.evaluation.storage import ExperimentStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
-STABLE_CONDITIONS = ("uniform", "global_fixed", "lookup_table", "embedding_knn", "agent_weights_only", "agent_full")
+STABLE_CONDITIONS = ("uniform", "global_every_round", "lookup_every_round", "embedding_knn", "agent_weights_only", "agent_full")
 STABLE_RESULT_FIELDS = [
     "run_id",
     "config_hash",
@@ -126,7 +126,7 @@ def run_stable_protocol(
         pool_df = sample_candidate_pool(normalized_df, n=pool_size, seed=seed)
         pool = CandidatePool(pool_df, attribute_cols)
 
-        if condition == "global_fixed":
+        if condition in ("global_every_round", "global_fixed"):
             scores = topsis(pool, global_fixed_weights)
             fallback, latency, api_calls = False, 0.0, 0
             top_id = scores.sort_values(ascending=False).index[0]
@@ -143,7 +143,7 @@ def run_stable_protocol(
             category_val = None
             w_json = json.dumps(w)
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
-        elif condition == "lookup_table":
+        elif condition in ("lookup_every_round", "lookup_table"):
             w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
             scores = topsis(pool, w)
             fallback, latency, api_calls = False, 0.0, 0
@@ -188,7 +188,7 @@ def run_stable_protocol(
         )
         
         # Calculate metric values
-        if condition in ("global_fixed", "lookup_table", "uniform", "embedding_knn"):
+        if condition in ("global_every_round", "global_fixed", "lookup_every_round", "lookup_table", "uniform", "embedding_knn"):
             pred_weights = json.loads(w_json)
         else:
             pred_weights = decision.weights

@@ -22,3 +22,6 @@ anthropic>=0.30
 # Dev / testing
 pytest>=7.0
 pytest-cov>=4.0
+
+sentence-transformers>=2.2.0
+torch>=2.0.0

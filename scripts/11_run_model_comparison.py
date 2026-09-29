@@ -31,7 +31,7 @@ from agentic_selection.utils import load_config, setup_logging
 from agentic_selection.evaluation.metrics import bootstrap_ci
 
 
-def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_regret: float, uniform_regret_ci_lower: float):
+def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_df: pd.DataFrame):
     print(f"\n=======================================================")
     print(f" Model: {model_name}")
     print(f"=======================================================")
@@ -44,10 +44,19 @@ def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_regret: f
     for reasoner_name, group in agent_df.groupby("reasoner"):
         # Regret + CI
         regret_ci = bootstrap_ci(group["regret"], group["pool_seed"])
-        # Check against uniform baseline
-        flag = ""
-        if regret_ci.mean >= uniform_regret_ci_lower:
-            flag = " (⚠️ ≈ Uniform Baseline)"
+        # Paired regret diff vs uniform
+        joined = group.merge(uniform_df, on=["task_key", "pool_seed"], suffixes=("", "_uni"))
+        if not joined.empty:
+            diff = joined["regret"] - joined["regret_uni"]
+            diff_ci = bootstrap_ci(diff, joined["pool_seed"])
+            flag = " (⚠️ ≈ Uniform Baseline)" if diff_ci.lower <= 0 <= diff_ci.upper else ""
+        else:
+            diff_ci = None
+            flag = ""
+            
+        weight_l1 = group["weight_l1"].mean()
+        if weight_l1 < 0.05:
+            flag += " (⚠️ Low L1 -> copy?)"
 
         weight_l1 = group["weight_l1"].mean()
         fallback_rate = group["fallback_triggered"].astype(bool).mean() * 100
@@ -62,12 +71,47 @@ def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_regret: f
         else:
             category_acc = float('nan')
 
+        # Additional metrics
+        entropy = group["entropy"].mean() if "entropy" in group.columns else float('nan')
+        # max_weight: if we had the actual weights json we could compute it, but we can compute from weights json if it's there.
+        # Actually protocol.py might not have max_weight yet. But the user asked for max_weight. Let's compute it.
+        import json
+        max_weights = []
+        for wj in group["weights_json"].dropna():
+            w = json.loads(wj)
+            max_weights.append(max(list(w.values()) + [0.0]))
+        max_w = np.mean(max_weights) if max_weights else float('nan')
+
         print(f"\n--- Reasoner: {reasoner_name} ---")
         print(f"  Regret:        {regret_ci.mean:.4f} [{regret_ci.lower:.4f}, {regret_ci.upper:.4f}]{flag}")
+        if diff_ci:
+            print(f"  Paired Diff:   {diff_ci.mean:.4f} [{diff_ci.lower:.4f}, {diff_ci.upper:.4f}]")
         print(f"  Weight L1:     {weight_l1:.4f}")
+        print(f"  Entropy:       {entropy:.4f}")
+        print(f"  Max Weight:    {max_w:.4f}")
         print(f"  Fallback Rate: {fallback_rate:.1f}%")
         print(f"  Category Acc:  {category_acc:.1f}%")
-        print(f"  Latency:       {latency:.2f}s")
+        print(f"  Latency:       {latency:.2f}s/call")
+        
+        # Add: mean weights per model for 1 task (streaming) vs ref vs uniform
+        streaming_rows = group[group["task_key"] == "streaming"]
+        if len(streaming_rows) > 0:
+            print(f"\n  [Streaming Task Weights]")
+            weights_lists = []
+            for wj in streaming_rows["weights_json"].dropna():
+                weights_lists.append(json.loads(wj))
+            if weights_lists:
+                mean_weights = pd.DataFrame(weights_lists).mean().to_dict()
+                print(f"    Model Mean:   " + ", ".join(f"{k}: {v:.3f}" for k, v in mean_weights.items() if v > 0.05))
+            
+            # Ref and uniform
+            from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, GLOBAL_FIXED_WEIGHTS
+            print(f"    Reference:    " + ", ".join(f"{k}: {v:.3f}" for k, v in TASK_LOOKUP_TABLE["streaming"].items() if v > 0.05))
+            print(f"    Uniform:      " + ", ".join(f"{k}: {v:.3f}" for k, v in GLOBAL_FIXED_WEIGHTS.items() if v > 0.05))
+            
+            print(f"\n  [5 Raw Outputs for streaming]")
+            for i, wj in enumerate(streaming_rows["weights_json"].dropna().head(5)):
+                print(f"    {i+1}: {wj}")
 
 
 def main() -> int:
@@ -75,6 +119,8 @@ def main() -> int:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--n-pools", type=int, default=30)
     parser.add_argument("--pool-size", type=int, default=50)
+    parser.add_argument("--models", type=str, default="qwen2.5:1.5b,llama3.2:latest,qwen2.5:7b,llama3.1:8b")
+    parser.add_argument("--reasoners", type=str, default="DirectWeight,Classification")
     args = parser.parse_args()
 
     setup_logging()
@@ -91,11 +137,17 @@ def main() -> int:
 
     base_seed = config["protocol"]["stable"]["base_seed"]
 
-    models = ["qwen2.5:1.5b", "llama3.2:latest", "qwen2.5:7b", "llama3.1:8b"]
-    reasoners = {
+    models_list = [m.strip() for m in args.models.split(",")]
+    
+    all_reasoners_map = {
         "DirectWeight": DirectWeightReasoner,
         "Classification": ClassificationReasoner,
+        "direct": DirectWeightReasoner,
+        "classification": ClassificationReasoner,
     }
+    
+    reasoners_list = [r.strip() for r in args.reasoners.split(",")]
+    reasoners = {r: all_reasoners_map[r] for r in reasoners_list}
 
     try:
         git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()[:8]
@@ -143,7 +195,16 @@ def main() -> int:
     uniform_ci = bootstrap_ci(uniform_regrets, uniform_results[uniform_results["condition"] == "uniform"]["pool_seed"])
     print(f"Uniform Baseline Regret: {uniform_ci.mean:.4f} [{uniform_ci.lower:.4f}, {uniform_ci.upper:.4f}]")
     
-    for model in models:
+    total_est_calls = len(models_list) * len(reasoners) * 14 * args.n_pools
+    est_hours = total_est_calls * 25.0 / 3600.0
+    print(f"\nTotal estimated LLM calls: {total_est_calls} (~{est_hours:.1f} hours at 25s/call)")
+    import time
+    start_time = time.time()
+    
+    total_actual_calls = 0
+    total_cache_hits = 0
+
+    for model in models_list:
         model_df = []
         for r_name, r_cls in reasoners.items():
             print(f"\nEvaluating Model: {model} with Reasoner: {r_name}")
@@ -177,9 +238,19 @@ def main() -> int:
             model_df.append(run_res)
             
         combined_model_df = pd.concat(model_df, ignore_index=True)
-        print_comparison_report(combined_model_df, model, uniform_ci.mean, uniform_ci.lower)
+        
+        actual_calls = combined_model_df["api_calls"].sum()
+        cache_hits = len(combined_model_df) - actual_calls
+        total_actual_calls += actual_calls
+        total_cache_hits += cache_hits
+        
+        print_comparison_report(combined_model_df, model, uniform_results[uniform_results["condition"] == "uniform"])
 
+    end_time = time.time()
     print(f"\nAll results saved to {output_csv}")
+    print(f"Total Actual LLM Calls: {total_actual_calls}")
+    print(f"Total Cache Hits: {total_cache_hits}")
+    print(f"Wall Time: {end_time - start_time:.2f}s")
     return 0
 
 if __name__ == "__main__":
