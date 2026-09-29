@@ -61,6 +61,10 @@ def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_df: pd.Da
         weight_l1 = group["weight_l1"].mean()
         fallback_rate = group["fallback_triggered"].astype(bool).mean() * 100
         latency = group["latency_seconds"].mean()
+        ndcg_5 = group["ndcg_at_5"].mean() if "ndcg_at_5" in group.columns else float('nan')
+        kendall = group["kendall_tau"].mean() if "kendall_tau" in group.columns else float('nan')
+        cache_hits = len(group) - group["api_calls"].sum()
+        actual_calls = group["api_calls"].sum()
         
         # Category Accuracy
         # (Assuming task_key is the true category. For held out tasks, it might not match exactly, but let's calculate for known profiles)
@@ -91,7 +95,9 @@ def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_df: pd.Da
         print(f"  Max Weight:    {max_w:.4f}")
         print(f"  Fallback Rate: {fallback_rate:.1f}%")
         print(f"  Category Acc:  {category_acc:.1f}%")
-        print(f"  Latency:       {latency:.2f}s/call")
+        print(f"  NDCG@5:        {ndcg_5:.4f}")
+        print(f"  Kendall Tau:   {kendall:.4f}")
+        print(f"  Latency:       {latency:.2f}s/call (Actual API calls: {actual_calls}, Cache hits: {cache_hits})")
         
         # Add: mean weights per model for 1 task (streaming) vs ref vs uniform
         streaming_rows = group[group["task_key"] == "streaming"]
@@ -107,7 +113,12 @@ def print_comparison_report(df: pd.DataFrame, model_name: str, uniform_df: pd.Da
             # Ref and uniform
             from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, GLOBAL_FIXED_WEIGHTS
             print(f"    Reference:    " + ", ".join(f"{k}: {v:.3f}" for k, v in TASK_LOOKUP_TABLE["streaming"].items() if v > 0.05))
-            print(f"    Uniform:      " + ", ".join(f"{k}: {v:.3f}" for k, v in GLOBAL_FIXED_WEIGHTS.items() if v > 0.05))
+            
+            # calculate uniform l1 
+            ref_w = TASK_LOOKUP_TABLE["streaming"]
+            uni_w = GLOBAL_FIXED_WEIGHTS
+            uni_l1 = sum(abs(ref_w.get(k, 0.0) - uni_w.get(k, 0.0)) for k in ref_w.keys() | uni_w.keys())
+            print(f"    Uniform:      " + ", ".join(f"{k}: {v:.3f}" for k, v in GLOBAL_FIXED_WEIGHTS.items() if v > 0.05) + f" (L1 to ref: {uni_l1:.4f})")
             
             print(f"\n  [5 Raw Outputs for streaming]")
             for i, wj in enumerate(streaming_rows["weights_json"].dropna().head(5)):
@@ -214,7 +225,7 @@ def main() -> int:
             if memory_path.exists():
                 memory_path.unlink()
                 
-            backend = OllamaBackend(model, seed=42, temperature=0.0)
+            backend = OllamaBackend(model, seed=42, temperature=0.0, num_predict=60, num_ctx=2048)
             controller = AgentController(
                 backend=backend,
                 attribute_cols=QWS_ATTRIBUTE_COLUMNS,

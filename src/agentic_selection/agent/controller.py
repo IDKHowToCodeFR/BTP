@@ -166,7 +166,8 @@ class AgentController:
         model_name = getattr(self.backend, "model", type(self.backend).__name__)
         reasoner_name = type(self.reasoning_strategy).__name__
         from agentic_selection.agent.reasoning import PROMPT_VERSION
-        cache_key = json.dumps((self.backend.name, model_name, reasoner_name, PROMPT_VERSION, task_description, perception.to_prompt_text(), digest))
+        schema_hash = hash(json.dumps(self.reasoning_strategy.get_schema(self.attribute_cols, self.tool_menu), sort_keys=True))
+        cache_key = json.dumps((self.backend.name, model_name, reasoner_name, PROMPT_VERSION, schema_hash, task_description, perception.to_prompt_text(), digest))
         
         cached_result = self._llm_cache.get(cache_key)
         if cached_result is not None:

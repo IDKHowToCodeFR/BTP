@@ -183,6 +183,9 @@ class OllamaBackend(LLMBackend):
                     "prompt_tokens": data.get("prompt_eval_count", 0),
                     "completion_tokens": data.get("eval_count", 0),
                     "total_duration": data.get("total_duration", 0),
+                    "load_duration": data.get("load_duration", 0),
+                    "prompt_eval_duration": data.get("prompt_eval_duration", 0),
+                    "eval_duration": data.get("eval_duration", 0),
                 }
                 return text, usage
                 

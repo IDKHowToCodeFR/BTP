@@ -14,7 +14,7 @@ from agentic_selection.agent.perception import PoolPerception
 from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, get_lookup_weights
 
 # --- Globals & Errors ---
-PROMPT_VERSION = "1.0"
+PROMPT_VERSION = "2.0"
 DEFAULT_TOOL_MENU: Tuple[str, ...] = ("weighted_sum", "topsis", "skyline_then_topsis")
 
 
@@ -148,12 +148,38 @@ class ReasoningStrategy(Protocol):
         tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
     ) -> Tuple[dict, str, dict]:
         ...
+        
+    def get_schema(self, attribute_cols: Sequence[str], tool_menu: Sequence[str]) -> dict:
+        ...
 
 
 class DirectWeightReasoner:
     """The original regression reasoning strategy: forces the LLM to output
     continuous weights summing to 1.
     """
+    def get_schema(self, attribute_cols: Sequence[str], tool_menu: Sequence[str]) -> dict:
+        weight_props = {
+            c: {"type": "number", "minimum": 0.0, "maximum": 1.0}
+            for c in attribute_cols
+        }
+        return {
+            "type": "object",
+            "properties": {
+                "weights": {
+                    "type": "object",
+                    "properties": weight_props,
+                    "required": list(attribute_cols),
+                    "additionalProperties": False
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": list(tool_menu)
+                },
+                "justification": {"type": "string", "maxLength": 20}
+            },
+            "required": ["weights", "strategy", "justification"],
+            "additionalProperties": False
+        }
     def decide(
         self,
         backend: LLMBackend,
@@ -167,29 +193,7 @@ class DirectWeightReasoner:
             task_description, perception, attribute_cols, memory_digest, tool_menu
         )
         
-        # Build explicit schema for weights to constrain output
-        weight_props = {
-            c: {"type": "number", "minimum": 0.0, "maximum": 1.0}
-            for c in attribute_cols
-        }
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "weights": {
-                    "type": "object",
-                    "properties": weight_props,
-                    "required": list(attribute_cols),
-                    "additionalProperties": False
-                },
-                "strategy": {
-                    "type": "string",
-                    "enum": list(tool_menu)
-                },
-                "justification": {"type": "string"}
-            },
-            "required": ["weights", "strategy", "justification"],
-            "additionalProperties": False
-        }
+        json_schema = self.get_schema(attribute_cols, tool_menu)
         raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)
         parsed = parse_llm_json(raw_text)
         return parsed, raw_text, usage_dict
@@ -223,6 +227,23 @@ class ClassificationReasoner:
     """An SLM-optimized reasoning strategy that asks the LLM to classify the
     task into a known profile, then maps that profile to optimal weights.
     """
+    def get_schema(self, attribute_cols: Sequence[str], tool_menu: Sequence[str]) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": list(TASK_LOOKUP_TABLE.keys())
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": list(tool_menu)
+                },
+                "justification": {"type": "string", "maxLength": 20}
+            },
+            "required": ["category", "strategy", "justification"],
+            "additionalProperties": False
+        }
     def decide(
         self,
         backend: LLMBackend,
@@ -261,7 +282,7 @@ class ClassificationReasoner:
                     "type": "string",
                     "enum": list(tool_menu)
                 },
-                "justification": {"type": "string"}
+                "justification": {"type": "string", "maxLength": 60}
             },
             "required": ["category", "strategy", "justification"],
             "additionalProperties": False
