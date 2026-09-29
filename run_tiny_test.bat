@@ -42,4 +42,10 @@ echo ========================================================
 uv run python scripts\06_generate_report_figures.py
 if errorlevel 1 exit /b 1
 
+echo ========================================================
+echo Generating Report Tables...
+echo ========================================================
+uv run python scripts\07_generate_report_tables.py
+if errorlevel 1 exit /b 1
+
 echo Done!

@@ -42,8 +42,13 @@ uv run python scripts\05_run_drift_experiment.py %DRIFT_ARGS%
 if errorlevel 1 goto error
 
 echo.
-echo === 6/6: report figures ===
+echo === 6/7: report figures ===
 uv run python scripts\06_generate_report_figures.py
+if errorlevel 1 goto error
+
+echo.
+echo === 7/7: report tables ===
+uv run python scripts\07_generate_report_tables.py
 if errorlevel 1 goto error
 
 echo.
