@@ -145,6 +145,8 @@ def get_lookup_weights(
           the lookup table's only mechanism for handling task phrasing
           outside its fixed coverage (paper §4.2/H3) -- by construction
           it cannot understand novel phrasing, only pattern-match it.
+        - "embedding_knn": matches against the task profiles' descriptions
+          using sentence-transformers.
         - "global": always fall back to GLOBAL_FIXED_WEIGHTS on a miss.
         - "raise": raise KeyError on a miss (useful in tests).
     similarity_cutoff : float
@@ -164,6 +166,12 @@ def get_lookup_weights(
     if fallback == "global":
         return dict(GLOBAL_FIXED_WEIGHTS)
 
+    if fallback == "embedding_knn":
+        key_match = nearest_profile_key(profile_key, fallback="embedding_knn")
+        if key_match:
+            return dict(TASK_LOOKUP_TABLE[key_match])
+        return dict(GLOBAL_FIXED_WEIGHTS)
+
     if fallback != "nearest":
         raise ValueError(f"unknown fallback mode: {fallback}")
 
@@ -174,11 +182,37 @@ def get_lookup_weights(
     return dict(GLOBAL_FIXED_WEIGHTS)
 
 
-def nearest_profile_key(profile_key: str, similarity_cutoff: float = 0.5) -> Optional[str]:
-    """Which known profile key (if any) a free-text description fuzzy-matches."""
+# Caching the SentenceTransformer model to avoid reloading it constantly
+_embed_model = None
+
+def nearest_profile_key(profile_key: str, similarity_cutoff: float = 0.5, fallback: str = "nearest") -> Optional[str]:
+    """Which known profile key (if any) a free-text description matches."""
     key = profile_key.strip().lower().replace(" ", "_").replace("-", "_")
     if key in TASK_LOOKUP_TABLE:
         return key
+        
+    if fallback == "embedding_knn":
+        global _embed_model
+        if _embed_model is None:
+            from sentence_transformers import SentenceTransformer
+            import torch
+            _embed_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+            
+        from agentic_selection.tasks import TASK_PROFILES
+        candidates = list(TASK_PROFILES)
+        
+        # embed query and candidates
+        query_emb = _embed_model.encode(profile_key, convert_to_tensor=True)
+        cand_docs = [p.description for p in candidates]
+        cand_embs = _embed_model.encode(cand_docs, convert_to_tensor=True)
+        
+        from sentence_transformers import util
+        scores = util.cos_sim(query_emb, cand_embs)[0]
+        best_idx = int(scores.argmax())
+        if float(scores[best_idx]) >= similarity_cutoff:
+            return candidates[best_idx].key
+        return None
+
     candidates = list(TASK_LOOKUP_TABLE.keys())
     matches = difflib.get_close_matches(key, candidates, n=1, cutoff=similarity_cutoff)
     return matches[0] if matches else None

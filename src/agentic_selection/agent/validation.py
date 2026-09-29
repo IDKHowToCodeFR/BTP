@@ -67,6 +67,7 @@ class ValidationResult:
     justification: str
     fallback_triggered: bool
     fallback_reason: Optional[str]
+    category: Optional[str] = None
 
 
 def _fallback(
@@ -77,7 +78,7 @@ def _fallback(
     profile_key_hint: Optional[str] = None,
 ) -> ValidationResult:
     lookup_query = profile_key_hint if profile_key_hint else task_description
-    weights = get_lookup_weights(lookup_query, fallback="nearest")
+    weights = get_lookup_weights(lookup_query, fallback="embedding_knn")
     # Restrict/reorder to exactly attribute_cols in case the lookup table
     # was built for a different (e.g. larger) attribute schema than the
     # current candidate pool actually has.
@@ -93,6 +94,7 @@ def _fallback(
         justification=f"[FALLBACK] {reason}",
         fallback_triggered=True,
         fallback_reason=reason,
+        category=None,
     )
 
 
@@ -179,4 +181,5 @@ def validate_agent_output(
         justification=justification,
         fallback_triggered=False,
         fallback_reason=None,
+        category=parsed.get("category"),
     )

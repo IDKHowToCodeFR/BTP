@@ -14,6 +14,7 @@ def make_stable_df(is_synthetic=False):
                 {
                     "task_key": "streaming",
                     "condition": cond,
+                    "pool_seed": i,
                     "regret": 0.1 * i,
                     "fallback_triggered": False,
                     "latency_seconds": 0.05,

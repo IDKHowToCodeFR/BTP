@@ -39,11 +39,11 @@ protocol:
   # experiment alone -- reduce n_pools for a cheap smoke test first.
   stable:
     n_pools: 30
-    pool_size: 20
+    pool_size: 50
     base_seed: 1000
   drift:
     n_trials: 10
-    pool_size: 20
+    pool_size: 50
     n_rounds: 20
     degrade_start_round: 8
     static_reevaluation_period: 5

@@ -62,6 +62,78 @@ def regret(
     chosen_value = ref_scores.loc[method_top1]
     return float(best_possible - chosen_value)
 
+def weight_l1(weights_pred: dict, weights_ref: dict, attribute_cols: Sequence[str]) -> float:
+    return float(sum(abs(weights_pred.get(c, 0.0) - weights_ref.get(c, 0.0)) for c in attribute_cols))
+
+def weight_entropy(weights: dict, attribute_cols: Sequence[str]) -> float:
+    w = np.array([weights.get(c, 0.0) for c in attribute_cols], dtype=float)
+    w = w[w > 0]
+    if len(w) == 0:
+        return 0.0
+    return float(-np.sum(w * np.log(w)))
+
+def max_weight(weights: dict, attribute_cols: Sequence[str]) -> float:
+    return float(max([weights.get(c, 0.0) for c in attribute_cols] + [0.0]))
+
+def top3_overlap(ranking_pred: pd.Series, ranking_ref: pd.Series) -> float:
+    top3_pred = set(ranking_pred.sort_values(ascending=False).index[:3])
+    top3_ref = set(ranking_ref.sort_values(ascending=False).index[:3])
+    if not top3_ref:
+        return 0.0
+    return float(len(top3_pred & top3_ref) / 3.0)
+
+def normalized_regret(pool: pd.DataFrame, method_scores: pd.Series, reference_weights: dict, attribute_cols: Sequence[str]) -> float:
+    ref_scores = pool.loc[:, list(attribute_cols)].to_numpy(dtype=float) @ np.array(
+        [reference_weights[c] for c in attribute_cols], dtype=float
+    )
+    ref_scores = pd.Series(ref_scores, index=pool.index)
+    best_possible = ref_scores.max()
+    worst_possible = ref_scores.min()
+    if best_possible <= worst_possible + 1e-9:
+        return 0.0
+    
+    method_top1 = method_scores.sort_values(ascending=False).index[0]
+    chosen_value = ref_scores.loc[method_top1]
+    return float((best_possible - chosen_value) / (best_possible - worst_possible))
+
+def ndcg_at_k(ranking_pred: pd.Series, ranking_ref: pd.Series, k: int = 5) -> float:
+    # Use ideal ranking scores as relevance scores
+    relevance = ranking_ref.sort_values(ascending=False).copy()
+    # Shift relevance to be non-negative if needed
+    min_rel = relevance.min()
+    if min_rel < 0:
+        relevance -= min_rel
+    
+    pred_top_k = ranking_pred.sort_values(ascending=False).index[:k]
+    
+    dcg = 0.0
+    for i, item in enumerate(pred_top_k):
+        rel = relevance.loc[item]
+        dcg += (2**rel - 1) / np.log2(i + 2)
+        
+    ideal_top_k = relevance.index[:k]
+    idcg = 0.0
+    for i, item in enumerate(ideal_top_k):
+        rel = relevance.loc[item]
+        idcg += (2**rel - 1) / np.log2(i + 2)
+        
+    if idcg <= 1e-9:
+        return 0.0
+    return float(dcg / idcg)
+
+def kendall_tau(ranking_pred: pd.Series, ranking_ref: pd.Series) -> float:
+    from scipy.stats import kendalltau
+    
+    common_idx = ranking_pred.index.intersection(ranking_ref.index)
+    if len(common_idx) < 2:
+        return 0.0
+        
+    r_pred = ranking_pred.loc[common_idx]
+    r_ref = ranking_ref.loc[common_idx]
+    
+    tau, _ = kendalltau(r_pred, r_ref)
+    return float(tau) if not np.isnan(tau) else 0.0
+
 
 @dataclass
 class AdaptationLagResult:
@@ -189,3 +261,30 @@ class MeanCI:
         if self.n == 0:
             return "n/a"
         return f"{self.mean:.4f} [{self.lower:.4f}, {self.upper:.4f}] (n={self.n})"
+
+def bootstrap_ci(values: pd.Series, group_keys: pd.Series, n_boot: int = 1000, confidence: float = 0.95) -> MeanCI:
+    """Bootstrap confidence interval, resampling by group_keys (e.g., pool_seed)."""
+    df = pd.DataFrame({"val": values, "grp": group_keys}).dropna()
+    if len(df) == 0:
+        return MeanCI(mean=float("nan"), lower=float("nan"), upper=float("nan"), n=0)
+    groups = list(df.groupby("grp"))
+    n_groups = len(groups)
+    if n_groups < 2:
+        return MeanCI(mean=float(df["val"].mean()), lower=float(df["val"].mean()), upper=float(df["val"].mean()), n=len(df))
+    
+    rng = np.random.RandomState(42)
+    means = []
+    for _ in range(n_boot):
+        idx = rng.randint(0, n_groups, size=n_groups)
+        resampled_vals = []
+        for i in idx:
+            resampled_vals.extend(groups[i][1]["val"].tolist())
+        means.append(np.mean(resampled_vals))
+        
+    alpha = (1.0 - confidence) / 2.0
+    return MeanCI(
+        mean=float(df["val"].mean()),
+        lower=float(np.percentile(means, alpha * 100)),
+        upper=float(np.percentile(means, (1 - alpha) * 100)),
+        n=len(df),
+    )

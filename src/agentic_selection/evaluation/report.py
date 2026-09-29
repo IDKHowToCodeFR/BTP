@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from agentic_selection.evaluation.metrics import mean_confidence_interval
+from agentic_selection.evaluation.metrics import bootstrap_ci, mean_confidence_interval
 from agentic_selection.evaluation.plot_style import (
     CONDITION_COLORS,
     add_bar_labels,
@@ -27,11 +27,16 @@ from agentic_selection.evaluation.plot_style import (
 
 CONDITION_DISPLAY_NAMES = {
     "global_fixed": "Global fixed",
+    "global_every_round": "Global fixed (re-evaluated)",
+    "uniform": "Uniform",
+    "embedding_knn": "Embedding k-NN",
     "lookup_table": "Lookup table",
+    "lookup_every_round": "Lookup table (re-evaluated)",
     "agent_weights_only": "Agent (weights only)",
     "agent_full": "Agent (full)",
 }
-CONDITION_ORDER = ["global_fixed", "lookup_table", "agent_weights_only", "agent_full"]
+CONDITION_ORDER = ["uniform", "global_fixed", "embedding_knn", "lookup_table", "agent_weights_only", "agent_full"]
+DRIFT_CONDITION_ORDER = ["global_fixed", "global_every_round", "lookup_table", "lookup_every_round", "agent_weights_only", "agent_full"]
 
 
 def _check_synthetic(df: pd.DataFrame, allow_synthetic: bool) -> bool:
@@ -57,8 +62,11 @@ def regret_table(stable_df: pd.DataFrame, allow_synthetic: bool = False) -> pd.D
     for task_key, group in stable_df.groupby("task_key"):
         row = {"task": task_key}
         for cond in CONDITION_ORDER:
-            sub = group[group["condition"] == cond]["regret"]
-            ci = mean_confidence_interval(sub.tolist()) if len(sub) else None
+            sub = group[group["condition"] == cond]
+            if len(sub) == 0:
+                row[CONDITION_DISPLAY_NAMES[cond]] = "n/a"
+                continue
+            ci = bootstrap_ci(sub["regret"], sub["pool_seed"])
             row[CONDITION_DISPLAY_NAMES[cond]] = str(ci) if ci else "n/a"
         rows.append(row)
     table = pd.DataFrame(rows).set_index("task")
@@ -75,12 +83,12 @@ def drift_table(drift_df: pd.DataFrame, allow_synthetic: bool = False) -> pd.Dat
     has_synth = _check_synthetic(drift_df, allow_synthetic)
 
     rows = []
-    for cond in CONDITION_ORDER:
+    for cond in DRIFT_CONDITION_ORDER:
         sub = drift_df[drift_df["condition"] == cond]
         censored = sub["censored"].astype(bool)
         n_censored = int(censored.sum())
-        observed = sub.loc[~censored, "lag_rounds"].astype(float)
-        ci = mean_confidence_interval(observed.tolist()) if len(observed) else None
+        observed = sub.loc[~censored]
+        ci = bootstrap_ci(observed["lag_rounds"].astype(float), observed["trial_seed"]) if len(observed) else None
         rows.append(
             {
                 "condition": CONDITION_DISPLAY_NAMES[cond],

@@ -21,6 +21,7 @@ import concurrent.futures
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+import numpy as np
 import pandas as pd
 
 from agentic_selection.agent.controller import AgentController
@@ -33,7 +34,7 @@ from agentic_selection.evaluation.runner import ExperimentRunner
 from agentic_selection.evaluation.storage import ExperimentStorage
 from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, TaskProfile
 
-STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
+STABLE_CONDITIONS = ("uniform", "global_fixed", "lookup_table", "embedding_knn", "agent_weights_only", "agent_full")
 STABLE_RESULT_FIELDS = [
     "run_id",
     "config_hash",
@@ -51,10 +52,18 @@ STABLE_RESULT_FIELDS = [
     "top_service_id",
     "strategy",
     "weights_json",
+    "category",
     "is_synthetic_data",
     "prompt_tokens",
     "completion_tokens",
     "total_duration",
+    "weight_l1",
+    "weight_entropy",
+    "max_weight",
+    "top3_overlap",
+    "normalized_regret",
+    "ndcg_at_5",
+    "kendall_tau",
 ]
 
 
@@ -122,7 +131,17 @@ def run_stable_protocol(
             fallback, latency, api_calls = False, 0.0, 0
             top_id = scores.sort_values(ascending=False).index[0]
             strategy = "topsis"
+            category_val = None
             w_json = json.dumps(global_fixed_weights)
+            prompt_tokens, completion_tokens, total_duration = 0, 0, 0
+        elif condition == "uniform":
+            w = {c: 1.0 / len(attribute_cols) for c in attribute_cols}
+            scores = topsis(pool, w)
+            fallback, latency, api_calls = False, 0.0, 0
+            top_id = scores.sort_values(ascending=False).index[0]
+            strategy = "topsis"
+            category_val = None
+            w_json = json.dumps(w)
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition == "lookup_table":
             w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
@@ -130,6 +149,18 @@ def run_stable_protocol(
             fallback, latency, api_calls = False, 0.0, 0
             top_id = scores.sort_values(ascending=False).index[0]
             strategy = "topsis"
+            category_val = None
+            w_json = json.dumps(w)
+            prompt_tokens, completion_tokens, total_duration = 0, 0, 0
+        elif condition == "embedding_knn":
+            w = get_lookup_weights(task_description, fallback="embedding_knn")
+            # Restrict weights to current attribute_cols
+            w = {c: w.get(c, 0.0) for c in attribute_cols}
+            scores = topsis(pool, w)
+            fallback, latency, api_calls = False, 0.0, 0
+            top_id = scores.sort_values(ascending=False).index[0]
+            strategy = "topsis"
+            category_val = None
             w_json = json.dumps(w)
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition in ("agent_weights_only", "agent_full"):
@@ -143,6 +174,7 @@ def run_stable_protocol(
             api_calls = decision.api_calls
             top_id = decision.top_service_id()
             strategy = decision.strategy
+            category_val = decision.category
             w_json = json.dumps(decision.weights)
             prompt_tokens = decision.prompt_tokens
             completion_tokens = decision.completion_tokens
@@ -151,6 +183,31 @@ def run_stable_protocol(
             raise ValueError(f"unknown condition: {condition}")
 
         r = regret(pool.df, scores, ref_weights, attribute_cols)
+        from agentic_selection.evaluation.metrics import (
+            weight_l1, weight_entropy, max_weight, top3_overlap, normalized_regret, ndcg_at_k, kendall_tau
+        )
+        
+        # Calculate metric values
+        if condition in ("global_fixed", "lookup_table", "uniform", "embedding_knn"):
+            pred_weights = json.loads(w_json)
+        else:
+            pred_weights = decision.weights
+            
+        metric_w_l1 = weight_l1(pred_weights, ref_weights, attribute_cols)
+        metric_w_ent = weight_entropy(pred_weights, attribute_cols)
+        metric_max_w = max_weight(pred_weights, attribute_cols)
+        
+        # Calculate reference ranking for overlap/ranking metrics
+        ref_scores = pool.df.loc[:, list(attribute_cols)].to_numpy(dtype=float) @ np.array(
+            [ref_weights[c] for c in attribute_cols], dtype=float
+        )
+        ref_ranking = pd.Series(ref_scores, index=pool.df.index)
+        
+        metric_t3o = top3_overlap(scores, ref_ranking)
+        metric_nreg = normalized_regret(pool.df, scores, ref_weights, attribute_cols)
+        metric_ndcg = ndcg_at_k(scores, ref_ranking, k=5)
+        metric_tau = kendall_tau(scores, ref_ranking)
+        
         row = {
             "run_id": run_id,
             "config_hash": config_hash,
@@ -168,10 +225,18 @@ def run_stable_protocol(
             "top_service_id": top_id,
             "strategy": strategy,
             "weights_json": w_json,
+            "category": category_val,
             "is_synthetic_data": is_synthetic_data,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_duration": total_duration,
+            "weight_l1": metric_w_l1,
+            "weight_entropy": metric_w_ent,
+            "max_weight": metric_max_w,
+            "top3_overlap": metric_t3o,
+            "normalized_regret": metric_nreg,
+            "ndcg_at_5": metric_ndcg,
+            "kendall_tau": metric_tau,
         }
         storage.record(row)
 
@@ -189,7 +254,7 @@ def run_stable_protocol(
     return storage.load_all()
 
 
-DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
+DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "lookup_every_round", "global_every_round", "agent_weights_only", "agent_full")
 DRIFT_RESULT_FIELDS = [
     "run_id",
     "config_hash",
@@ -299,10 +364,19 @@ def run_drift_protocol(
                 decide_fn = lambda p: topsis(CandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
                 reeval = static_reevaluation_period
                 dur = 0
+            elif condition == "global_every_round":
+                decide_fn = lambda p: topsis(CandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
+                reeval = None
+                dur = 0
             elif condition == "lookup_table":
                 w = TASK_LOOKUP_TABLE[profile.key]
                 decide_fn = lambda p, w=w: topsis(CandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
                 reeval = static_reevaluation_period
+                dur = 0
+            elif condition == "lookup_every_round":
+                w = TASK_LOOKUP_TABLE[profile.key]
+                decide_fn = lambda p, w=w: topsis(CandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
+                reeval = None
                 dur = 0
             elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
                 strategy_override = "topsis" if condition == "agent_weights_only" else None
