@@ -55,6 +55,7 @@ class AgentDecision:
     raw_llm_text: Optional[str]
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    total_duration: int = 0
 
     def top(self, k: int = 1) -> pd.Index:
         return self.ranking.sort_values(ascending=False).index[:k]
@@ -159,13 +160,18 @@ class AgentController:
         api_calls = 0
         prompt_tokens = 0
         completion_tokens = 0
-        cache_key = json.dumps((task_description, perception.to_prompt_text(), digest))
+        total_duration = 0
+        model_name = getattr(self.backend, "model", type(self.backend).__name__)
+        reasoner_name = type(self.reasoning_strategy).__name__
+        from agentic_selection.agent.reasoning import PROMPT_VERSION
+        cache_key = json.dumps((self.backend.name, model_name, reasoner_name, PROMPT_VERSION, task_description, perception.to_prompt_text(), digest))
         
         cached_result = self._llm_cache.get(cache_key)
         if cached_result is not None:
             parsed, raw_text, usage_dict = cached_result["parsed"], cached_result["raw_text"], cached_result["usage_dict"]
             prompt_tokens = usage_dict.get("prompt_tokens", 0)
             completion_tokens = usage_dict.get("completion_tokens", 0)
+            total_duration = usage_dict.get("total_duration", 0)
         else:
             try:
                 parsed, raw_text, usage_dict = self.reasoning_strategy.decide(
@@ -174,12 +180,13 @@ class AgentController:
                 api_calls = 1
                 prompt_tokens = usage_dict.get("prompt_tokens", 0)
                 completion_tokens = usage_dict.get("completion_tokens", 0)
+                total_duration = usage_dict.get("total_duration", 0)
                 self._llm_cache.set(cache_key, {"parsed": parsed, "raw_text": raw_text, "usage_dict": usage_dict})
             except LLMOutputParseError as e:
                 parsed, raw_text = None, e.raw_text
                 api_calls = 1
                 usage_dict = {"prompt_tokens": 0, "completion_tokens": 0}
-                self._llm_cache.set(cache_key, {"parsed": parsed, "raw_text": raw_text, "usage_dict": usage_dict})
+                # Do not cache parse failures
         latency = time.time() - t0
 
         validated: ValidationResult = validate_agent_output(
@@ -204,7 +211,7 @@ class AgentController:
             fallback_triggered=validated.fallback_triggered,
             fallback_reason=validated.fallback_reason,
         )
-        if use_memory:
+        if use_memory and not validated.fallback_triggered:
             self.memory.append(record)
 
         if len(ranking) < len(original_index):
@@ -227,4 +234,5 @@ class AgentController:
             raw_llm_text=raw_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            total_duration=total_duration,
         )

@@ -171,6 +171,7 @@ class OllamaBackend(LLMBackend):
                 usage = {
                     "prompt_tokens": data.get("prompt_eval_count", 0),
                     "completion_tokens": data.get("eval_count", 0),
+                    "total_duration": data.get("total_duration", 0),
                 }
                 return text, usage
                 

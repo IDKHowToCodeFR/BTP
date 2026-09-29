@@ -35,6 +35,10 @@ from agentic_selection.tasks import HELD_OUT_TASKS, TASK_PROFILES, HeldOutTask, 
 
 STABLE_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
 STABLE_RESULT_FIELDS = [
+    "run_id",
+    "config_hash",
+    "git_sha",
+    "model",
     "task_key",
     "task_kind",  # "profile" | "held_out"
     "task_description",
@@ -50,6 +54,7 @@ STABLE_RESULT_FIELDS = [
     "is_synthetic_data",
     "prompt_tokens",
     "completion_tokens",
+    "total_duration",
 ]
 
 
@@ -58,10 +63,15 @@ def run_stable_protocol(
     attribute_cols: Sequence[str],
     storage: ExperimentStorage,
     agent_controller: AgentController,
+    run_id: str = "default",
+    config_hash: str = "unknown",
+    git_sha: str = "unknown",
+    model: str = "unknown",
     n_pools: int = 30,
     pool_size: int = 20,
     base_seed: int = 1000,
     is_synthetic_data: bool = False,
+    max_workers: int = 1,
     task_profiles: Sequence[TaskProfile] = TASK_PROFILES,
     held_out_tasks: Sequence[HeldOutTask] = HELD_OUT_TASKS,
     conditions: Sequence[str] = STABLE_CONDITIONS,
@@ -113,7 +123,7 @@ def run_stable_protocol(
             top_id = scores.sort_values(ascending=False).index[0]
             strategy = "topsis"
             w_json = json.dumps(global_fixed_weights)
-            prompt_tokens, completion_tokens = 0, 0
+            prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition == "lookup_table":
             w = lookup_weights_fn(task_description if task_kind == "held_out" else task_key)
             scores = topsis(pool, w)
@@ -121,11 +131,11 @@ def run_stable_protocol(
             top_id = scores.sort_values(ascending=False).index[0]
             strategy = "topsis"
             w_json = json.dumps(w)
-            prompt_tokens, completion_tokens = 0, 0
+            prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition in ("agent_weights_only", "agent_full"):
             strategy_override = "topsis" if condition == "agent_weights_only" else None
             decision = agent_controller.decide(
-                task_description, pool, strategy_override=strategy_override
+                task_description, pool, strategy_override=strategy_override, use_memory=False
             )
             scores = decision.ranking
             fallback = decision.fallback_triggered
@@ -136,11 +146,16 @@ def run_stable_protocol(
             w_json = json.dumps(decision.weights)
             prompt_tokens = decision.prompt_tokens
             completion_tokens = decision.completion_tokens
+            total_duration = decision.total_duration
         else:
             raise ValueError(f"unknown condition: {condition}")
 
         r = regret(pool.df, scores, ref_weights, attribute_cols)
         row = {
+            "run_id": run_id,
+            "config_hash": config_hash,
+            "git_sha": git_sha,
+            "model": model,
             "task_key": task_key,
             "task_kind": task_kind,
             "task_description": task_description,
@@ -156,6 +171,7 @@ def run_stable_protocol(
             "is_synthetic_data": is_synthetic_data,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
+            "total_duration": total_duration,
         }
         storage.record(row)
 
@@ -169,12 +185,16 @@ def run_stable_protocol(
                     lambda tk=task_key, tkind=task_kind, td=task_description, s=seed, c=condition, rw=ref_weights: _run_single_condition(tk, tkind, td, s, c, rw)
                 )
 
-    ExperimentRunner(max_workers=10).execute(trials)
+    ExperimentRunner(max_workers=max_workers).execute(trials)
     return storage.load_all()
 
 
 DRIFT_CONDITIONS = ("global_fixed", "lookup_table", "agent_weights_only", "agent_full")
 DRIFT_RESULT_FIELDS = [
+    "run_id",
+    "config_hash",
+    "git_sha",
+    "model",
     "task_key",
     "trial_seed",
     "condition",
@@ -187,6 +207,7 @@ DRIFT_RESULT_FIELDS = [
     "trace_json",
     "is_synthetic_data",
     "n_switches",
+    "total_duration",
 ]
 
 
@@ -195,6 +216,10 @@ def run_drift_protocol(
     attribute_cols: Sequence[str],
     storage: ExperimentStorage,
     agent_controller: AgentController,
+    run_id: str = "default",
+    config_hash: str = "unknown",
+    git_sha: str = "unknown",
+    model: str = "unknown",
     n_trials: int = 5,
     pool_size: int = 20,
     n_rounds: int = 16,
@@ -205,6 +230,7 @@ def run_drift_protocol(
     max_seed_attempts_for_consensus: int = 25,
     base_seed: int = 5000,
     is_synthetic_data: bool = False,
+    max_workers: int = 1,
     task_profiles: Sequence[TaskProfile] = TASK_PROFILES,
     degraded_attributes_by_profile: Dict[str, List[str]] | None = None,
     conditions: Sequence[str] = DRIFT_CONDITIONS,
@@ -272,16 +298,36 @@ def run_drift_protocol(
             if condition == "global_fixed":
                 decide_fn = lambda p: topsis(CandidatePool(p, attribute_cols), GLOBAL_FIXED_WEIGHTS).sort_values(ascending=False).index[0]
                 reeval = static_reevaluation_period
+                dur = 0
             elif condition == "lookup_table":
                 w = TASK_LOOKUP_TABLE[profile.key]
                 decide_fn = lambda p, w=w: topsis(CandidatePool(p, attribute_cols), w).sort_values(ascending=False).index[0]
                 reeval = static_reevaluation_period
+                dur = 0
             elif condition in ("agent_weights_only", "agent_full", "rag_agent"):
                 strategy_override = "topsis" if condition == "agent_weights_only" else None
-                ctrl = rag_controller if condition == "rag_agent" and rag_controller else agent_controller
-                decide_fn = lambda p, so=strategy_override, c=ctrl: c.decide(
-                    profile.description, CandidatePool(p, attribute_cols), strategy_override=so
-                ).top_service_id()
+                base_ctrl = rag_controller if condition == "rag_agent" and "rag_controller" in locals() and rag_controller else agent_controller
+                from pathlib import Path
+                fresh_mem_path = Path(base_ctrl.memory.path).parent / f"mem_{run_id}_{condition}_{trial_seed}.jsonl"
+                ctrl = AgentController(
+                    backend=base_ctrl.backend,
+                    attribute_cols=base_ctrl.attribute_cols,
+                    memory_path=fresh_mem_path,
+                    tool_menu=base_ctrl.tool_menu,
+                    k_memory=base_ctrl.k_memory,
+                    reasoning_strategy=base_ctrl.reasoning_strategy
+                )
+                ctrl._llm_cache = base_ctrl._llm_cache  # Share cache
+                
+                # capture total duration from decisions
+                dur = 0
+                def _decide_and_record_dur(p):
+                    nonlocal dur
+                    dec = ctrl.decide(profile.description, CandidatePool(p, attribute_cols), strategy_override=strategy_override)
+                    dur += dec.total_duration
+                    return dec.top_service_id()
+                
+                decide_fn = _decide_and_record_dur
                 reeval = None
             else:
                 raise ValueError(f"unknown condition: {condition}")
@@ -294,6 +340,10 @@ def run_drift_protocol(
             n_switches = sum(1 for i in range(1, len(trace)) if trace[i] != trace[i-1]) if trace else 0
             
             row = {
+                "run_id": run_id,
+                "config_hash": config_hash,
+                "git_sha": git_sha,
+                "model": model,
                 "task_key": task_key,
                 "trial_seed": trial_seed,
                 "condition": condition,
@@ -306,6 +356,7 @@ def run_drift_protocol(
                 "trace_json": str(trace),
                 "is_synthetic_data": is_synthetic_data,
                 "n_switches": n_switches,
+                "total_duration": dur,
             }
             storage.record(row)
 
@@ -319,5 +370,5 @@ def run_drift_protocol(
                 lambda p=profile, t_i=trial_i, d=default_degraded: _run_single_drift_trial(p, t_i, d)
             )
 
-    ExperimentRunner(max_workers=10).execute(trials)
+    ExperimentRunner(max_workers=max_workers).execute(trials)
     return storage.load_all()

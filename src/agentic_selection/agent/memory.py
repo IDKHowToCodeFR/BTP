@@ -113,14 +113,10 @@ class MemoryStore:
         fast_scored.sort(key=lambda t: t[0])
         candidates = fast_scored[:50]
 
-        # Pass 2: Heavy text similarity only on the top candidates
+        # Pass 2: Heavy text similarity removed as it dominates dist.
         final_scored = []
         for dist, r in candidates:
-            text_sim = 0.0
-            if query_task:
-                text_sim = SequenceMatcher(None, query_task, r.task_description).ratio()
-            # We want to minimize score. Max text_sim is 1.0. Subtract weighted text similarity.
-            score = dist - (text_sim * 10.0)
+            score = dist
             final_scored.append((score, r))
             
         final_scored.sort(key=lambda t: t[0])
@@ -161,5 +157,4 @@ def format_digest(records: List[MemoryRecord], max_chars: int = 500) -> str:
         "strategy": r.strategy,
         "justification": r.justification
     }
-    digest = f'Task: "{r.task_description}"\nOutput: {json.dumps(example)}'
-    return digest[:max_chars]
+    return f'Task: "{r.task_description}"\nOutput: {json.dumps(example)}'

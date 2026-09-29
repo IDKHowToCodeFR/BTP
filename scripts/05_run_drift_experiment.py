@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import json
+import hashlib
+import uuid
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -33,6 +38,7 @@ def main() -> int:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--n-trials", type=int, default=None)
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--run-id", type=str, default=None)
     args = parser.parse_args()
 
     setup_logging()
@@ -82,14 +88,22 @@ def main() -> int:
         reasoning_strategy=ClassificationReasoner(),
     )
 
-    results_dir = project_root / config["paths"]["results_dir"]
+    try:
+        git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()[:8]
+    except Exception:
+        git_sha = "unknown"
+    model_name = config["llm"].get("model", "unknown")
+
+    config_hash = hashlib.md5(json.dumps(config, sort_keys=True).encode()).hexdigest()[:8]
+    run_id = args.run_id or uuid.uuid4().hex[:8]
+    results_dir = project_root / config["paths"]["results_dir"] / run_id
     results_dir.mkdir(parents=True, exist_ok=True)
     output_csv = results_dir / "drift_results.csv"
 
     print(f"\nRunning (resumable, writing incrementally to {output_csv}) ...")
     storage = CsvStorage(
         csv_path=output_csv,
-        key_columns=["task_key", "trial_seed", "condition"],
+        key_columns=["run_id", "model", "task_key", "trial_seed", "condition"],
         fieldnames=DRIFT_RESULT_FIELDS
     )
     results = run_drift_protocol(
@@ -97,6 +111,10 @@ def main() -> int:
         QWS_ATTRIBUTE_COLUMNS,
         storage,
         controller,
+        run_id=run_id,
+        config_hash=config_hash,
+        git_sha=git_sha,
+        model=model_name,
         n_trials=n_trials,
         pool_size=dcfg["pool_size"],
         n_rounds=dcfg["n_rounds"],

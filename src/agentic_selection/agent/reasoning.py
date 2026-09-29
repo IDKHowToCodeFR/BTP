@@ -14,6 +14,7 @@ from agentic_selection.agent.perception import PoolPerception
 from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, get_lookup_weights
 
 # --- Globals & Errors ---
+PROMPT_VERSION = "1.0"
 DEFAULT_TOOL_MENU: Tuple[str, ...] = ("weighted_sum", "topsis", "skyline_then_topsis")
 
 
