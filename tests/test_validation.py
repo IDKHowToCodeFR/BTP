@@ -44,10 +44,13 @@ def test_unknown_attribute_key_triggers_fallback():
     assert "price" in result.fallback_reason
 
 
-def test_negative_weight_triggers_fallback():
+def test_negative_weight_clamped_and_renormalized():
     parsed = {"weights": {"a": -0.5, "b": 1.0, "c": 0.5}, "strategy": "topsis", "justification": "x"}
     result = validate_agent_output(parsed, "task", ATTRS)
-    assert result.fallback_triggered
+    assert not result.fallback_triggered
+    assert result.weights["a"] == 0.0
+    assert result.weights["b"] == pytest.approx(1.0 / 1.5)
+    assert result.weights["c"] == pytest.approx(0.5 / 1.5)
 
 
 def test_all_zero_weights_triggers_fallback():

@@ -70,7 +70,10 @@ class PoolPerception:
         
         lines.append(f"Per-attribute variance (0-1 scale): {var_str}")
         lines.append(f"Most negatively-correlated attribute pairs (potential trade-offs): {conflict_str}")
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        if len(text) > 400:
+            text = text[:400] + " ... (truncated)"
+        return text
 
 
 def _outlier_row_fraction(df: pd.DataFrame, attribute_cols: Sequence[str]) -> float:

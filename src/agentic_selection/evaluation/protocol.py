@@ -165,8 +165,9 @@ def run_stable_protocol(
             prompt_tokens, completion_tokens, total_duration = 0, 0, 0
         elif condition in ("agent_weights_only", "agent_full"):
             strategy_override = "topsis" if condition == "agent_weights_only" else None
+            use_mem = (condition == "agent_full")
             decision = agent_controller.decide(
-                task_description, pool, strategy_override=strategy_override, use_memory=False
+                task_key, task_description, pool, strategy_override=strategy_override, use_memory=use_mem
             )
             scores = decision.ranking
             fallback = decision.fallback_triggered
@@ -355,7 +356,7 @@ def run_drift_protocol(
             dur = 0
             def _decide_and_record_dur(p):
                 nonlocal dur
-                dec = ctrl.decide(profile.description, NormalizedCandidatePool(p, attribute_cols), strategy_override=strategy_override)
+                dec = ctrl.decide(profile.key, profile.description, NormalizedCandidatePool(p, attribute_cols), strategy_override=strategy_override)
                 dur += dec.total_duration
                 return dec.top_service_id()
             

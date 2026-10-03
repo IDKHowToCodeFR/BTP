@@ -71,14 +71,14 @@ def generate_drift_table(drift: pd.DataFrame, out_path: Path):
         f.write(markdown + "\n\n")
 
 def generate_ablation_table(stable: pd.DataFrame, out_path: Path):
-    if stable.empty or "task_kind" not in stable.columns:
+    if stable.empty or "task_key" not in stable.columns:
         return
         
     ablation = stable[stable["condition"].isin(["agent_weights_only", "agent_full"])]
     if ablation.empty:
         return
         
-    summary = ablation.groupby(["task_kind", "condition"])["regret"].mean().unstack().fillna(0)
+    summary = ablation.groupby(["task_key", "condition"])["regret"].mean().unstack().fillna(0)
     summary = summary.rename(columns={
         "agent_weights_only": LABELS["agent_weights_only"],
         "agent_full": LABELS["agent_full"]

@@ -92,3 +92,6 @@ llm_cache*
 # Scratch / Debug files
 scratch_*
 full_experiment_log.txt
+
+results/report/
+results/tables/

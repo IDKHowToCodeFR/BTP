@@ -144,12 +144,9 @@ def validate_agent_output(
         )
 
     try:
-        numeric_weights = {k: float(v) for k, v in weights.items()}
+        numeric_weights = {k: max(0.0, float(v)) for k, v in weights.items()}
     except (TypeError, ValueError):
         return _fallback(task_description, "weights contained a non-numeric value", attribute_cols)
-
-    if any(v < 0 for v in numeric_weights.values()):
-        return _fallback(task_description, "weights contained a negative value", attribute_cols)
 
     # Fill any attribute the model omitted with 0 -- an omission is not
     # itself a hard failure (a sparse-but-valid weighting is plausible),

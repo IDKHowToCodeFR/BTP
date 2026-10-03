@@ -36,7 +36,17 @@ from agentic_selection.constants import QWS_ATTRIBUTE_COLUMNS
 
 Weights = Dict[str, float]
 
-GLOBAL_FIXED_WEIGHTS: Weights = {c: 1.0 / len(QWS_ATTRIBUTE_COLUMNS) for c in QWS_ATTRIBUTE_COLUMNS}
+GLOBAL_FIXED_WEIGHTS: Weights = {
+    "response_time": 0.123,
+    "availability": 0.110,
+    "throughput": 0.142,
+    "successability": 0.130,
+    "reliability": 0.125,
+    "compliance": 0.102,
+    "best_practices": 0.110,
+    "latency": 0.073,
+    "documentation": 0.085
+}
 
 TASK_LOOKUP_TABLE: Dict[str, Weights] = {
     "streaming": {

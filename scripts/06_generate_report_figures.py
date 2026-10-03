@@ -143,7 +143,7 @@ def plot_fig3_drift_timeline(drift: pd.DataFrame, out_path: Path):
 def plot_fig4_latency_pareto(stable: pd.DataFrame, out_path: Path):
     """Figure 4: Performance vs Latency Pareto Frontier."""
     core_stable = stable[stable["condition"].isin(STABLE_ORDER + ["agent_weights_only"])].copy()
-    if core_stable.empty or "task_kind" not in core_stable.columns:
+    if core_stable.empty or "task_key" not in core_stable.columns:
         return
         
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -181,14 +181,14 @@ def plot_fig4_latency_pareto(stable: pd.DataFrame, out_path: Path):
 def plot_fig5_ablation_task(stable: pd.DataFrame, out_path: Path):
     """Figure 5: Ablation by Task Kind."""
     core_stable = stable[stable["condition"].isin(STABLE_ORDER + ["agent_weights_only"])].copy()
-    if core_stable.empty or "task_kind" not in core_stable.columns:
+    if core_stable.empty or "task_key" not in core_stable.columns:
         return
         
     ablation_data = core_stable[core_stable["condition"].isin(ABLATION_ORDER)]
     if ablation_data.empty:
         return
         
-    agg_ablation = ablation_data.groupby(["task_kind", "condition"])["regret"].mean().unstack()
+    agg_ablation = ablation_data.groupby(["task_key", "condition"])["regret"].mean().unstack()
     agg_ablation = agg_ablation.reindex(columns=ABLATION_ORDER).fillna(0)
     
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -224,14 +224,14 @@ def plot_fig5_ablation_task(stable: pd.DataFrame, out_path: Path):
 def plot_fig6_strategy_task(stable: pd.DataFrame, out_path: Path):
     """Figure 6: Strategy Selection by Task Kind."""
     core_stable = stable[stable["condition"].isin(STABLE_ORDER + ["agent_weights_only"])].copy()
-    if core_stable.empty or "task_kind" not in core_stable.columns:
+    if core_stable.empty or "task_key" not in core_stable.columns:
         return
         
     agent_full_data = core_stable[core_stable["condition"] == "agent_full"]
     if agent_full_data.empty:
         return
         
-    strat_dist = pd.crosstab(agent_full_data["task_kind"], agent_full_data["strategy"], normalize="index") * 100
+    strat_dist = pd.crosstab(agent_full_data["task_key"], agent_full_data["strategy"], normalize="index") * 100
     
     fig, ax = plt.subplots(figsize=(7, 5))
     strat_colors = ["#4C6FB1", "#56B4E9", "#009E73", "#E69F00"]

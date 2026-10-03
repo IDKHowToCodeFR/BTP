@@ -103,6 +103,8 @@ class MemoryStore:
         # Pass 1: Fast euclidean distance over the perception vector for all records
         fast_scored = []
         for r in records:
+            if query_task and r.task_description != query_task:
+                continue
             v = np.array(r.perception_vector, dtype=float)
             if v.shape != query_vector.shape:
                 continue

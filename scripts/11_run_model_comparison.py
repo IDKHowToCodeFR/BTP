@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding="utf-8")
 import json
 import hashlib
 import uuid
@@ -209,20 +211,20 @@ def main() -> int:
     uniform_ci = bootstrap_ci(uniform_regrets, uniform_results[uniform_results["condition"] == "uniform"]["pool_seed"])
     print(f"Uniform Baseline Regret: {uniform_ci.mean:.3f} [{uniform_ci.lower:.3f}, {uniform_ci.upper:.3f}]")
     
-    print("\nRunning embedding_knn Baseline...")
+    print("\nRunning lookup_table Baseline...")
     embedding_knn_results = run_stable_protocol(
         norm_df, QWS_ATTRIBUTE_COLUMNS, storage, dummy_controller,
         run_id=run_id, config_hash=config_hash, git_sha=git_sha,
         model="baseline", n_pools=args.n_pools, pool_size=args.pool_size, base_seed=base_seed,
-        is_synthetic_data=is_synthetic, conditions=("embedding_knn",)
+        is_synthetic_data=is_synthetic, conditions=("lookup_table",)
     )
     
-    print("\nRunning soft_knn Baseline...")
+    print("\nRunning global_fixed Baseline...")
     soft_knn_results = run_stable_protocol(
         norm_df, QWS_ATTRIBUTE_COLUMNS, storage, dummy_controller,
         run_id=run_id, config_hash=config_hash, git_sha=git_sha,
         model="baseline", n_pools=args.n_pools, pool_size=args.pool_size, base_seed=base_seed,
-        is_synthetic_data=is_synthetic, conditions=("soft_knn",)
+        is_synthetic_data=is_synthetic, conditions=("global_fixed",)
     )
 
     
@@ -255,12 +257,38 @@ def main() -> int:
                 reasoning_strategy=r_cls(),
             )
             
+            # Tuning alpha on first pools
+            best_alpha = 0.0
+            best_val_reg = float('inf')
+            tune_pools = min(3, args.n_pools)
+            print(f"  Tuning alpha on {tune_pools} val pools...")
+            for a in [0.0, 0.25, 0.5, 0.75, 1.0]:
+                controller.alpha_shrinkage = a
+                val_res = run_stable_protocol(
+                    norm_df, QWS_ATTRIBUTE_COLUMNS, storage, controller,
+                    run_id=run_id + f"_tune_{a}", config_hash=config_hash, git_sha=git_sha,
+                    model=model, n_pools=tune_pools, pool_size=args.pool_size, base_seed=base_seed-5,
+                    is_synthetic_data=is_synthetic, conditions=("agent_full",)
+                )
+                mean_r = val_res[val_res["condition"]=="agent_full"]["regret"].mean()
+                if mean_r < best_val_reg:
+                    best_val_reg = mean_r
+                    best_alpha = a
+            print(f"  Best alpha = {best_alpha}")
+
+            controller.alpha_shrinkage = best_alpha
+            controller.cache_hits = 0
+            controller.cache_misses = 0
+
             res = run_stable_protocol(
                 norm_df, QWS_ATTRIBUTE_COLUMNS, storage, controller,
                 run_id=run_id, config_hash=config_hash, git_sha=git_sha,
                 model=f"{model}_{r_name}", n_pools=args.n_pools, pool_size=args.pool_size, base_seed=base_seed,
                 is_synthetic_data=is_synthetic, conditions=("agent_full",)
             )
+            
+            cache_rate = controller.cache_hits / max(1, controller.cache_hits + controller.cache_misses)
+            print(f"  API Cache Hit Rate: {cache_rate*100:.1f}% ({controller.cache_hits}/{controller.cache_hits+controller.cache_misses})")
             
             # Append reasoner column for local processing
             # We filter only the ones that match this run
@@ -283,7 +311,7 @@ def main() -> int:
     print(" Baselines Comparison")
     print("=======================================================")
     all_baselines = pd.concat([uniform_results, embedding_knn_results, soft_knn_results])
-    for condition in ["embedding_knn", "soft_knn", "uniform"]:
+    for condition in ["lookup_table", "global_fixed", "uniform"]:
         cond_df = all_baselines[all_baselines["condition"] == condition]
         if len(cond_df) > 0:
             regret = cond_df["regret"].mean()

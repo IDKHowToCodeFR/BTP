@@ -29,20 +29,20 @@ class LLMBackend(abc.ABC):
 
 
 class OllamaBackend(LLMBackend):
-    """Zero-API-cost local backend, e.g. `ollama pull llama3.1:8b` then
+    """Zero-API-cost local backend, e.g. `ollama pull qwen2.5:1.5b` then
     `ollama serve` (usually already running as a background service after
     install). No API key needed.
     """
 
     def __init__(
         self,
-        model: str = "llama3.1:8b",
+        model: str = "qwen2.5:1.5b",
         host: str = "http://localhost:11434",
         temperature: float = 0.0,
         timeout: int = 300,
-        seed: Optional[int] = None,
-        num_ctx: Optional[int] = None,
-        num_predict: Optional[int] = None,
+        seed: Optional[int] = 42,
+        num_ctx: Optional[int] = 2048,
+        num_predict: Optional[int] = 200,
     ):
         self.model = model
         self.host = host.rstrip("/")
@@ -83,7 +83,7 @@ class OllamaBackend(LLMBackend):
                         **({"num_ctx": self.num_ctx} if self.num_ctx is not None else {}),
                         **({"num_predict": self.num_predict} if self.num_predict is not None else {}),
                     },
-                    "format": schema,
+                    "format": "json",
                 }
                 resp = self._session.post(
                     f"{self.host}/api/chat",
@@ -173,7 +173,7 @@ def build_backend_from_config(config: dict) -> LLMBackend:
     provider = config.get("provider", "mock").lower()
     if provider == "ollama":
         return OllamaBackend(
-            model=config.get("model", "llama3.1:8b"),
+            model=config.get("model", "qwen2.5:1.5b"),
             host=config.get("host", "http://localhost:11434"),
             temperature=config.get("temperature", 0.0),
             seed=config.get("seed"),

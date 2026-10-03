@@ -251,9 +251,8 @@ class ClassificationReasoner:
         return {
             "type": "object",
             "properties": {
-                "category": {
-                    "type": "string",
-                    "enum": list(TASK_LOOKUP_TABLE.keys())
+                "choice": {
+                    "type": "string"
                 },
                 "strategy": {
                     "type": "string",
@@ -261,7 +260,7 @@ class ClassificationReasoner:
                 },
                 "justification": {"type": "string", "maxLength": 20}
             },
-            "required": ["category", "strategy", "justification"],
+            "required": ["choice", "strategy", "justification"],
             "additionalProperties": False
         }
     def decide(
@@ -273,19 +272,25 @@ class ClassificationReasoner:
         memory_digest: str = "",
         tool_menu: Sequence[str] = DEFAULT_TOOL_MENU,
     ) -> Tuple[dict, str, dict]:
-        from agentic_selection.tasks.profiles import TASK_PROFILES
+        from agentic_selection.baselines.lookup_table import TASK_LOOKUP_TABLE, GLOBAL_FIXED_WEIGHTS
+        import json
         
-        cats = []
-        for p in TASK_PROFILES:
-            cats.append(f'- "{p.key}": Random nonsense text blablabla.')
-
-        if self.categories_shuffle_seed is not None:
-            import random
-            rng = random.Random(self.categories_shuffle_seed)
-            rng.shuffle(cats)
-
+        candidates_keys = list(TASK_LOOKUP_TABLE.keys())
+        from difflib import get_close_matches
+        nearest = get_close_matches(task_description, candidates_keys, n=2, cutoff=0.0)
+        
+        options = {"global_fixed": "Global fixed generic weights"}
+        for k in set(nearest + [candidates_keys[0]]):
+            if len(options) < 4:
+                options[k] = f"Profile: {k}"
+        
+        cats = [f'- "{k}": {v}' for k, v in options.items()]
         categories = "\n".join(cats)
+        
         system_prompt = CLASSIFICATION_SYSTEM_PROMPT.format(categories=categories)
+        system_prompt = system_prompt.replace('"category": "<category_name>"', '"choice": "<id>"')
+        system_prompt = system_prompt.replace('Category from list', 'choice from list')
+
         if set(tool_menu) != set(DEFAULT_TOOL_MENU):
             lines = "\n".join(f'- "{t}"' for t in tool_menu)
             system_prompt = re.sub(
@@ -299,40 +304,32 @@ class ClassificationReasoner:
         if memory_digest.strip():
             memory_section = f"Past valid JSON examples:\n{memory_digest}\n\n"
 
-        user_prompt = USER_PROMPT_TEMPLATE.format(
-            task_description=task_description,
-            perception_text=perception.to_prompt_text(),
-            memory_digest_section=memory_section,
-        )
+        prompt = f"Task: {task_description}\n\n"
+        if memory_section:
+            prompt += memory_section
+        prompt += f"Pool (N={perception.n_candidates}):\n{perception.to_prompt_text()}\n"
+        
+        schema = self.get_schema(attribute_cols, tool_menu)
+        schema["properties"]["choice"]["enum"] = list(options.keys())
 
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "category": {"type": "string"},
-                "strategy": {
-                    "type": "string",
-                    "enum": list(tool_menu)
-                },
-                "justification": {"type": "string", "maxLength": 60}
-            },
-            "required": ["category", "strategy", "justification"],
-            "additionalProperties": False
-        }
+        raw_text, usage_dict = backend.complete(system_prompt, prompt, json_schema=schema)
+        try:
+            from agentic_selection.agent.reasoning import parse_llm_json, LLMOutputParseError
+            parsed = parse_llm_json(raw_text)
+        except Exception:
+            parsed = {"choice": nearest[0] if nearest else "global_fixed", "strategy": "topsis", "justification": "parse fail"}
 
-        raw_text, usage_dict = backend.complete(system_prompt, user_prompt, json_schema=json_schema)
-        parsed = parse_llm_json(raw_text)
-
-        category = parsed.get("category", "")
-
-        # If the LLM hallucinates a category not in TASK_LOOKUP_TABLE despite strict 
-        # JSON schema enforcements, we fallback to the 'global' median weights to guarantee mathematical safety.
-        weights = get_lookup_weights(category, fallback="global")
+        choice = parsed.get("choice", "global_fixed")
+        if choice == "global_fixed":
+            weights = GLOBAL_FIXED_WEIGHTS
+        else:
+            weights = TASK_LOOKUP_TABLE.get(choice, GLOBAL_FIXED_WEIGHTS)
 
         final_dict = {
             "weights": weights,
             "strategy": parsed.get("strategy", ""),
             "justification": parsed.get("justification", ""),
-            "category": category,
+            "category": choice,
         }
         return final_dict, raw_text, usage_dict
 

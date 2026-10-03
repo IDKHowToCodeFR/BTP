@@ -15,13 +15,13 @@ llm:
   # - openai: needs OPENAI_API_KEY in your environment.
   # - ollama: no API key, but you must have Ollama installed and running
   #   locally (https://ollama.com) with the model pulled, e.g.:
-  #       ollama pull llama3.1:8b
+  #       ollama pull qwen2.5:1.5b
   # - mock: no network call at all, returns `fixed_response` verbatim
   #   every time. Only useful for a wiring/dry-run smoke test, NOT for
   #   producing any reportable result -- the validation layer will treat
   #   a constant response as one specific decision repeated everywhere.
   provider: ollama
-  model: qwen2.5:3b
+  model: qwen2.5:1.5b
   temperature: 0.0
   max_tokens: 1000
   # api_key: null   # prefer environment variables over putting a key here

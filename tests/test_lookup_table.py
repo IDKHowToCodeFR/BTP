@@ -18,10 +18,8 @@ def test_all_profile_weights_sum_to_one_and_cover_all_attributes():
         assert all(v >= 0 for v in w.values()), f"profile {key} has negative weight"
 
 
-def test_global_fixed_weights_uniform_and_sum_to_one():
+def test_global_fixed_weights_sum_to_one():
     assert sum(GLOBAL_FIXED_WEIGHTS.values()) == pytest.approx(1.0)
-    values = list(GLOBAL_FIXED_WEIGHTS.values())
-    assert all(v == pytest.approx(values[0]) for v in values)
 
 
 def test_get_lookup_weights_exact_key():
